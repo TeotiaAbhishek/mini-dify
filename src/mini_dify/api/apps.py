@@ -14,16 +14,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mini_dify.config import settings
 from mini_dify.db import get_session
 from mini_dify.llm.base import LLMProvider
-from mini_dify.llm.registry import get_provider
+from mini_dify.llm.embeddings import EmbeddingProvider
+from mini_dify.llm.registry import get_embedder, get_provider
 from mini_dify.llm.types import ProviderError, Usage
-from mini_dify.models import App, Conversation, Message
+from mini_dify.models import App, Conversation, Dataset, Message
 from mini_dify.prompts import MissingVariablesError, extract_variables, render_template
+from mini_dify.rag.retrieval import RetrievedChunk, retrieve
 from mini_dify.services.chat_service import build_prompt, load_history
 
 router = APIRouter(prefix="/v1", tags=["apps"])
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 ProviderDep = Annotated[LLMProvider, Depends(get_provider)]
+EmbedderDep = Annotated[EmbeddingProvider, Depends(get_embedder)]
 
 
 # ---------- Request and response shapes ----------
@@ -35,6 +38,8 @@ class AppCreate(BaseModel):
     model: str | None = None
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     memory_window: int = Field(default=10, ge=0, le=100)
+    dataset_ids: list[uuid.UUID] = []
+    retrieval_top_k: int = Field(default=4, ge=1, le=20)
 
 
 class AppOut(BaseModel):
@@ -47,6 +52,8 @@ class AppOut(BaseModel):
     model: str | None
     temperature: float
     memory_window: int
+    dataset_ids: list[uuid.UUID]
+    retrieval_top_k: int
     created_at: datetime
 
 
@@ -57,13 +64,39 @@ class ChatMessageRequest(BaseModel):
     stream: bool = False
 
 
+class Citation(BaseModel):
+    """One retrieved chunk the answer was based on. `number` matches [1], [2]... in the answer."""
+
+    number: int
+    document_id: uuid.UUID
+    filename: str
+    chunk_id: uuid.UUID
+    score: float
+    content: str
+
+
 class ChatMessageResponse(BaseModel):
     conversation_id: uuid.UUID
     message_id: uuid.UUID
     answer: str
+    citations: list[Citation]
     usage: Usage
     latency_ms: float
     time_to_first_token_ms: float | None
+
+
+def to_citations(chunks: list[RetrievedChunk]) -> list[Citation]:
+    return [
+        Citation(
+            number=number,
+            document_id=chunk.document_id,
+            filename=chunk.filename,
+            chunk_id=chunk.chunk_id,
+            score=chunk.score,
+            content=chunk.content,
+        )
+        for number, chunk in enumerate(chunks, start=1)
+    ]
 
 
 class MessageOut(BaseModel):
@@ -82,7 +115,11 @@ class MessageOut(BaseModel):
 
 @router.post("/apps", response_model=AppOut, status_code=201)
 async def create_app(body: AppCreate, session: SessionDep):
-    app = App(**body.model_dump(), variables=extract_variables(body.system_prompt))
+    for dataset_id in body.dataset_ids:
+        if await session.get(Dataset, dataset_id) is None:
+            raise HTTPException(status_code=422, detail=f"Dataset {dataset_id} not found")
+    # mode="json" turns the UUIDs into strings, which the JSON column can store.
+    app = App(**body.model_dump(mode="json"), variables=extract_variables(body.system_prompt))
     session.add(app)
     await session.commit()
     return app
@@ -112,6 +149,7 @@ async def send_chat_message(
     request: Request,
     session: SessionDep,
     provider: ProviderDep,
+    embedder: EmbedderDep,
 ):
     app = await session.get(App, app_id)
     if app is None:
@@ -131,12 +169,25 @@ async def send_chat_message(
         session.add(conversation)
         await session.commit()
 
-    # 2. Memory: the last N messages, then build what the model will see.
+    # 2. Knowledge: find the chunks most relevant to the question (if the app has datasets).
+    try:
+        context = await retrieve(
+            session,
+            embedder,
+            [uuid.UUID(dataset_id) for dataset_id in app.dataset_ids],
+            body.query,
+            app.retrieval_top_k,
+        )
+    except ProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    citations = to_citations(context)
+
+    # 3. Memory: the last N messages, then build what the model will see.
     history = await load_history(session, conversation.id, app.memory_window)
-    prompt = build_prompt(app, conversation, history, body.query)
+    prompt = build_prompt(app, conversation, history, body.query, context)
     model = app.model or settings.default_model
 
-    # 3a. Whole answer at once.
+    # 4a. Whole answer at once.
     if not body.stream:
         try:
             result = await provider.chat(model, prompt, app.temperature)
@@ -158,12 +209,13 @@ async def send_chat_message(
             conversation_id=conversation.id,
             message_id=answer.id,
             answer=result.content,
+            citations=citations,
             usage=result.usage,
             latency_ms=result.latency_ms,
             time_to_first_token_ms=result.time_to_first_token_ms,
         )
 
-    # 3b. Streamed answer. Messages are saved once the stream has finished.
+    # 4b. Streamed answer. Messages are saved once the stream has finished.
     conversation_id = conversation.id
     sessionmaker = request.app.state.sessionmaker
 
@@ -198,7 +250,11 @@ async def send_chat_message(
             )
             save_session.add(answer)
             await save_session.commit()
-        yield f"data: {json.dumps({'message_id': str(answer.id)})}\n\n"
+        end_event = {
+            "message_id": str(answer.id),
+            "citations": [citation.model_dump(mode="json") for citation in citations],
+        }
+        yield f"data: {json.dumps(end_event)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

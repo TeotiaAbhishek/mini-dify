@@ -14,7 +14,7 @@ This is a learning project, not a production fork. Each phase is a separate PR, 
 
 ## Running locally
 
-Requirements: Docker, [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com) with a model pulled (`ollama pull llama3.2:3b`).
+Requirements: Docker, [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com) with a chat model and an embedding model pulled (`ollama pull llama3.2:3b` and `ollama pull nomic-embed-text`).
 
 ```bash
 cp .env.example .env
@@ -72,6 +72,31 @@ curl -s localhost:8000/v1/apps/<app_id>/chat-messages -H 'content-type: applicat
 curl -s localhost:8000/v1/conversations/<conversation_id>/messages
 ```
 
+## Knowledge bases (RAG)
+
+A dataset holds documents (`.txt`, `.md`, `.pdf`). Each upload is split into overlapping chunks, embedded with `nomic-embed-text`, and stored in Postgres with pgvector. Retrieval can be `vector` (meaning), `keyword` (full-text search) or `hybrid` (both, merged with Reciprocal Rank Fusion). An app linked to datasets answers from them and returns numbered citations.
+
+```bash
+# Create a dataset
+curl -s localhost:8000/v1/datasets -H 'content-type: application/json' \
+  -d '{"name": "Handbook", "chunk_size": 500, "chunk_overlap": 80}'
+
+# Upload a document (indexing runs in the background)
+curl -s localhost:8000/v1/datasets/<dataset_id>/documents -F file=@handbook.pdf
+
+# Check its status, then look at the chunks
+curl -s localhost:8000/v1/datasets/<dataset_id>/documents
+curl -s localhost:8000/v1/documents/<document_id>/chunks
+
+# Search the dataset directly
+curl -s localhost:8000/v1/datasets/<dataset_id>/retrieve -H 'content-type: application/json' \
+  -d '{"query": "How many vacation days do I get?", "top_k": 4, "mode": "hybrid"}'
+
+# Link it to an app: answers now include "citations"
+curl -s localhost:8000/v1/apps -H 'content-type: application/json' \
+  -d '{"name": "HR bot", "system_prompt": "You answer HR questions.", "dataset_ids": ["<dataset_id>"]}'
+```
+
 ## Database migrations
 
 Tables are managed with [Alembic](https://alembic.sqlalchemy.org). After changing `src/mini_dify/models.py`:
@@ -100,8 +125,8 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 | 0 | Project skeleton, local stack, CI | ✅ |
 | 1 | Model provider layer, streaming, token and latency tracking | ✅ |
 | 2 | Chat apps, prompt templates, conversation memory | ✅ |
-| 3 | RAG: ingestion, chunking, embeddings, hybrid retrieval, reranking, citations | ⏳ |
-| 4 | Tools and agents (function calling, ReAct) | |
+| 3 | RAG: ingestion, chunking, embeddings, hybrid retrieval, citations | ✅ |
+| 4 | Tools and agents (function calling, ReAct) | ⏳ |
 | 5 | Workflow engine (graph of LLM, retrieval, branching, code and HTTP nodes) | |
 | 6 | MCP client and server | |
 | 7 | Tracing and evals | |

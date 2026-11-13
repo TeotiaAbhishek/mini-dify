@@ -5,7 +5,9 @@ from fastapi import FastAPI, Request
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from mini_dify.api.chat import router as chat_router
 from mini_dify.config import settings
+from mini_dify.llm.registry import get_provider
 
 
 @asynccontextmanager
@@ -17,9 +19,11 @@ async def lifespan(app: FastAPI):
     # Runs once at shutdown: close them cleanly.
     await app.state.redis.aclose()
     await app.state.engine.dispose()
+    await get_provider().aclose()
 
 
 app = FastAPI(title="mini-dify", lifespan=lifespan)
+app.include_router(chat_router)
 
 
 @app.get("/health")

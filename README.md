@@ -20,6 +20,7 @@ Requirements: Docker, [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.
 cp .env.example .env
 docker compose up -d                                   # Postgres + pgvector, Redis
 uv sync                                                # install dependencies
+uv run alembic upgrade head                            # create / update the database tables
 uv run uvicorn mini_dify.main:app --reload --app-dir src
 ```
 
@@ -47,6 +48,39 @@ curl -N localhost:8000/v1/chat -H 'content-type: application/json' \
 
 Optional fields: `model` (any model you've pulled in Ollama), `temperature` (0 to 2), `max_tokens`.
 
+## Chat apps
+
+An app saves a system prompt (with `{{variables}}`), a model, a temperature and a memory window. Conversations with it are stored in Postgres, and the last N messages are sent back to the model as memory.
+
+```bash
+# Create an app
+curl -s localhost:8000/v1/apps -H 'content-type: application/json' -d '{
+  "name": "Python tutor",
+  "system_prompt": "You are a patient Python tutor for {{name}}, a {{level}} programmer.",
+  "memory_window": 6
+}'
+
+# Start a conversation (inputs fill the variables)
+curl -s localhost:8000/v1/apps/<app_id>/chat-messages -H 'content-type: application/json' \
+  -d '{"query": "What is a list?", "inputs": {"name": "Abhi", "level": "beginner"}}'
+
+# Continue it (add "stream": true to stream)
+curl -s localhost:8000/v1/apps/<app_id>/chat-messages -H 'content-type: application/json' \
+  -d '{"query": "And a tuple?", "conversation_id": "<conversation_id>"}'
+
+# Read the history
+curl -s localhost:8000/v1/conversations/<conversation_id>/messages
+```
+
+## Database migrations
+
+Tables are managed with [Alembic](https://alembic.sqlalchemy.org). After changing `src/mini_dify/models.py`:
+
+```bash
+uv run alembic revision --autogenerate -m "describe the change"   # then read the generated file
+uv run alembic upgrade head
+```
+
 ## Tests and lint
 
 ```bash
@@ -54,6 +88,8 @@ uv run ruff check .
 uv run ruff format --check .
 uv run pytest -v
 ```
+
+Tests use a separate `minidify_test` database (created by `docker/init.sql` on a fresh volume, or once by hand with `docker compose exec db createdb -U minidify minidify_test`).
 
 CI runs the same checks on every pull request, against real Postgres and Redis service containers. Tests never call a real LLM: they use a fake provider and a mocked HTTP transport, so CI needs no GPU.
 
@@ -63,8 +99,8 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 |---|---|---|
 | 0 | Project skeleton, local stack, CI | ✅ |
 | 1 | Model provider layer, streaming, token and latency tracking | ✅ |
-| 2 | Chat apps, prompt templates, conversation memory | ⏳ |
-| 3 | RAG: ingestion, chunking, embeddings, hybrid retrieval, reranking, citations | |
+| 2 | Chat apps, prompt templates, conversation memory | ✅ |
+| 3 | RAG: ingestion, chunking, embeddings, hybrid retrieval, reranking, citations | ⏳ |
 | 4 | Tools and agents (function calling, ReAct) | |
 | 5 | Workflow engine (graph of LLM, retrieval, branching, code and HTTP nodes) | |
 | 6 | MCP client and server | |

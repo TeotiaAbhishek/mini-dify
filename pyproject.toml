@@ -5,6 +5,7 @@ description = "A small Dify-style LLM app platform, built to learn"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.20.1",
     "asyncpg>=0.32.0",
     "fastapi>=0.162.5",
     "httpx>=0.28.1",
@@ -26,9 +27,14 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest.py must set DATABASE_URL before anything imports the settings.
+"tests/conftest.py" = ["E402"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -13,5 +13,11 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     default_model: str = "llama3.2:3b"
 
+    embedding_provider: str = "ollama"
+    embedding_model: str = "nomic-embed-text"
+    # nomic-embed-text was trained with these task prefixes; other models may use none.
+    embedding_document_prefix: str = "search_document: "
+    embedding_query_prefix: str = "search_query: "
+
 
 settings = Settings()

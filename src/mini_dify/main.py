@@ -7,8 +7,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from mini_dify.api.apps import router as apps_router
 from mini_dify.api.chat import router as chat_router
+from mini_dify.api.datasets import router as datasets_router
 from mini_dify.config import settings
-from mini_dify.llm.registry import get_provider
+from mini_dify.llm.registry import get_embedder, get_provider
 
 
 @asynccontextmanager
@@ -22,11 +23,13 @@ async def lifespan(app: FastAPI):
     await app.state.redis.aclose()
     await app.state.engine.dispose()
     await get_provider().aclose()
+    await get_embedder().aclose()
 
 
 app = FastAPI(title="mini-dify", lifespan=lifespan)
 app.include_router(chat_router)
 app.include_router(apps_router)
+app.include_router(datasets_router)
 
 
 @app.get("/health")

@@ -9,11 +9,12 @@ This is a learning project, not a production fork. Each phase is a separate PR, 
 - **API:** Python 3.12, FastAPI, uvicorn
 - **Data:** Postgres 16 + pgvector (relational data and embeddings in one database), SQLAlchemy (async)
 - **Queue / cache:** Redis
+- **LLM:** Ollama (local models on the GPU) behind a provider interface
 - **Tooling:** uv, ruff, pytest, Docker Compose, GitHub Actions
 
 ## Running locally
 
-Requirements: Docker, [uv](https://docs.astral.sh/uv/).
+Requirements: Docker, [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com) with a model pulled (`ollama pull llama3.2:3b`).
 
 ```bash
 cp .env.example .env
@@ -28,6 +29,24 @@ Then:
 - http://localhost:8000/ready: readiness check (Postgres, pgvector, Redis)
 - http://localhost:8000/docs: interactive API docs
 
+## Try it
+
+Whole reply at once:
+
+```bash
+curl -s localhost:8000/v1/chat -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"What is Python?"}]}'
+```
+
+Streamed token by token (Server-Sent Events):
+
+```bash
+curl -N localhost:8000/v1/chat -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","content":"Write a haiku about GPUs"}],"stream":true}'
+```
+
+Optional fields: `model` (any model you've pulled in Ollama), `temperature` (0 to 2), `max_tokens`.
+
 ## Tests and lint
 
 ```bash
@@ -36,15 +55,15 @@ uv run ruff format --check .
 uv run pytest -v
 ```
 
-CI runs the same checks on every pull request, against real Postgres and Redis service containers.
+CI runs the same checks on every pull request, against real Postgres and Redis service containers. Tests never call a real LLM: they use a fake provider and a mocked HTTP transport, so CI needs no GPU.
 
 ## Roadmap
 
 | Phase | What | Status |
 |---|---|---|
 | 0 | Project skeleton, local stack, CI | ✅ |
-| 1 | Model provider layer, streaming, token and cost tracking | ⏳ |
-| 2 | Chat apps, prompt templates, conversation memory | |
+| 1 | Model provider layer, streaming, token and latency tracking | ✅ |
+| 2 | Chat apps, prompt templates, conversation memory | ⏳ |
 | 3 | RAG: ingestion, chunking, embeddings, hybrid retrieval, reranking, citations | |
 | 4 | Tools and agents (function calling, ReAct) | |
 | 5 | Workflow engine (graph of LLM, retrieval, branching, code and HTTP nodes) | |

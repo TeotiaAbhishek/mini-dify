@@ -47,6 +47,10 @@ class App(Base):
         String(20), default="function_calling", server_default=text("'function_calling'")
     )
     max_iterations: Mapped[int] = mapped_column(Integer, default=5, server_default=text("5"))
+    # MCP servers whose tools this app's agent can use (ids from the mcp_servers table).
+    mcp_server_ids: Mapped[list[str]] = mapped_column(
+        JSON, default=list, server_default=text("'[]'")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -200,3 +204,24 @@ class NodeRun(Base):
     # The order nodes finished in, so the run can be replayed step by step.
     position: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MCPServer(Base):
+    """An outside MCP server registered by URL. Its tools are cached in `tools`."""
+
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    # Short and unique: it becomes the prefix of each tool's name (deepwiki__ask_question).
+    name: Mapped[str] = mapped_column(String(30), unique=True)
+    url: Mapped[str] = mapped_column(String(500))
+    # Sent with every request, e.g. {"Authorization": "Bearer ..."}. Never returned by the API.
+    headers: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    # The tools from the server's last tools/list: [{name, description, input_schema}].
+    tools: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    server_info: Mapped[dict] = mapped_column(JSON, default=dict)
+    protocol_version: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

@@ -23,5 +23,9 @@ class Settings(BaseSettings):
     # unless this is on. Leave it off unless you need a workflow to call a local service.
     workflow_http_allow_private: bool = False
 
+    # The same rule for MCP server URLs. Turn it on to use an MCP server on your own
+    # machine, like mini-dify's own /mcp endpoint.
+    mcp_allow_private_urls: bool = False
+
 
 settings = Settings()

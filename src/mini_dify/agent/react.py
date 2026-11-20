@@ -30,7 +30,7 @@ Never write the Observation yourself."""
 def describe_tools(tools: list[Tool]) -> str:
     lines = []
     for tool in tools:
-        properties = tool.Args.model_json_schema().get("properties", {})
+        properties = tool.parameters().get("properties", {})
         arguments = {
             name: f"{schema.get('type', 'any')}: {schema.get('description', '')}"
             for name, schema in properties.items()

@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Literal
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,16 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mini_dify.agent.base import AgentAnswer, AgentStep
 from mini_dify.api.chat import sse
+from mini_dify.api.mcp_servers import MCPTransportDep
 from mini_dify.config import settings
 from mini_dify.db import get_session
 from mini_dify.llm.base import LLMProvider
 from mini_dify.llm.embeddings import EmbeddingProvider
 from mini_dify.llm.registry import get_embedder, get_provider
 from mini_dify.llm.types import ProviderError, Usage
-from mini_dify.models import App, Conversation, Dataset, Message
+from mini_dify.models import App, Conversation, Dataset, MCPServer, Message
 from mini_dify.prompts import MissingVariablesError, extract_variables, render_template
 from mini_dify.rag.retrieval import RetrievedChunk, retrieve
-from mini_dify.services.agent_service import is_agent_app, make_agent
+from mini_dify.services.agent_service import is_agent_app, load_mcp_servers, make_agent
 from mini_dify.services.chat_service import build_prompt, load_history
 from mini_dify.tools.base import ToolContext
 from mini_dify.tools.registry import BUILTIN_TOOLS
@@ -47,6 +49,7 @@ class AppCreate(BaseModel):
     tools: list[str] = []
     agent_mode: Literal["function_calling", "react"] = "function_calling"
     max_iterations: int = Field(default=5, ge=1, le=10)
+    mcp_server_ids: list[uuid.UUID] = []
 
 
 class AppOut(BaseModel):
@@ -64,6 +67,7 @@ class AppOut(BaseModel):
     tools: list[str]
     agent_mode: str
     max_iterations: int
+    mcp_server_ids: list[uuid.UUID]
     created_at: datetime
 
 
@@ -163,6 +167,9 @@ async def create_app(body: AppCreate, session: SessionDep):
             status_code=422,
             detail=f"Unknown tools: {', '.join(unknown)}. Available: {', '.join(BUILTIN_TOOLS)}",
         )
+    for server_id in body.mcp_server_ids:
+        if await session.get(MCPServer, server_id) is None:
+            raise HTTPException(status_code=422, detail=f"MCP server {server_id} not found")
     # mode="json" turns the UUIDs into strings, which the JSON column can store.
     app = App(**body.model_dump(mode="json"), variables=extract_variables(body.system_prompt))
     session.add(app)
@@ -195,6 +202,7 @@ async def send_chat_message(
     session: SessionDep,
     provider: ProviderDep,
     embedder: EmbedderDep,
+    mcp_transport: MCPTransportDep,
 ):
     app = await session.get(App, app_id)
     if app is None:
@@ -216,7 +224,9 @@ async def send_chat_message(
 
     # Agent apps take a different path: the model decides which tools to call.
     if is_agent_app(app):
-        return await agent_chat(app, conversation, body, request, session, provider, embedder)
+        return await agent_chat(
+            app, conversation, body, request, session, provider, embedder, mcp_transport
+        )
 
     # 2. Knowledge: find the chunks most relevant to the question (if the app has datasets).
     try:
@@ -303,16 +313,18 @@ async def agent_chat(
     session: AsyncSession,
     provider: LLMProvider,
     embedder: EmbeddingProvider,
+    mcp_transport: httpx.AsyncBaseTransport | None,
 ):
     """Run the agent loop: the model calls tools until it can answer."""
+    mcp_servers = await load_mcp_servers(session, app)
     history = await load_history(session, conversation.id, app.memory_window)
     prompt = build_prompt(app, conversation, history, body.query)
     model = app.model or settings.default_model
 
     # Whole answer at once.
     if not body.stream:
-        ctx = ToolContext(session=session, embedder=embedder)
-        agent = make_agent(app, provider, model, ctx)
+        ctx = ToolContext(session=session, embedder=embedder, mcp_transport=mcp_transport)
+        agent = make_agent(app, provider, model, ctx, mcp_servers)
         start = time.perf_counter()
         steps: list[AgentStep] = []
         try:
@@ -348,8 +360,8 @@ async def agent_chat(
         steps: list[AgentStep] = []
         # Tools need a database session that lives as long as this stream.
         async with sessionmaker() as agent_session:
-            ctx = ToolContext(session=agent_session, embedder=embedder)
-            agent = make_agent(app, provider, model, ctx)
+            ctx = ToolContext(session=agent_session, embedder=embedder, mcp_transport=mcp_transport)
+            agent = make_agent(app, provider, model, ctx, mcp_servers)
             try:
                 async for event in agent.run(prompt):
                     if isinstance(event, AgentStep):

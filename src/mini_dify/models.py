@@ -41,6 +41,12 @@ class App(Base):
     # when the migration adds these columns to a table that already has data.
     dataset_ids: Mapped[list[str]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     retrieval_top_k: Mapped[int] = mapped_column(Integer, default=4, server_default=text("4"))
+    # Agent settings. An app with at least one tool is an agent app.
+    tools: Mapped[list[str]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    agent_mode: Mapped[str] = mapped_column(
+        String(20), default="function_calling", server_default=text("'function_calling'")
+    )
+    max_iterations: Mapped[int] = mapped_column(Integer, default=5, server_default=text("5"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -70,6 +76,8 @@ class Message(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # For agent answers: the tool calls made on the way to the answer.
+    agent_steps: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from mini_dify.llm.ollama import OllamaProvider
-from mini_dify.llm.types import Message, ProviderError
+from mini_dify.llm.types import Message, ProviderError, ToolCall
 
 # What Ollama's /api/chat really sends back when stream=true: one JSON object per line.
 OLLAMA_LINES = [
@@ -82,3 +82,48 @@ async def test_ollama_down_raises_provider_error():
 
     with pytest.raises(ProviderError, match="Could not reach Ollama"):
         await make_provider(handler).chat("llama3.2:3b", [Message(role="user", content="hi")])
+
+
+@pytest.mark.anyio
+async def test_tool_calls_are_sent_and_parsed():
+    seen = {}
+    lines = [
+        {
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "calculator", "arguments": {"expression": "6*7"}}}
+                ],
+            },
+            "done": False,
+        },
+        {"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, text="\n".join(json.dumps(line) for line in lines))
+
+    tools = [{"type": "function", "function": {"name": "calculator", "parameters": {}}}]
+    history = [
+        Message(role="user", content="6*7?"),
+        Message(role="assistant", tool_calls=[ToolCall(name="calculator", arguments={"x": 1})]),
+        Message(role="tool", content="42", tool_name="calculator"),
+    ]
+    result = await make_provider(handler).chat("qwen2.5:7b", history, tools=tools)
+
+    # What we sent: the tools, and each message in Ollama's own format.
+    assert seen["body"]["tools"] == tools
+    assert seen["body"]["messages"][0] == {"role": "user", "content": "6*7?"}
+    assert seen["body"]["messages"][1]["tool_calls"] == [
+        {"function": {"name": "calculator", "arguments": {"x": 1}}}
+    ]
+    assert seen["body"]["messages"][2] == {
+        "role": "tool",
+        "content": "42",
+        "tool_name": "calculator",
+    }
+    # What we got back.
+    assert result.content == ""
+    assert result.tool_calls == [ToolCall(name="calculator", arguments={"expression": "6*7"})]

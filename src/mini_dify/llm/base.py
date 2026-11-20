@@ -1,8 +1,9 @@
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from typing import Any
 
-from mini_dify.llm.types import ChatChunk, ChatResult, Message, Usage
+from mini_dify.llm.types import ChatChunk, ChatResult, Message, ToolCall, Usage
 
 
 class LLMProvider(ABC):
@@ -21,8 +22,12 @@ class LLMProvider(ABC):
         messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ChatChunk]:
-        """Yield the reply piece by piece as the model generates it."""
+        """Yield the reply piece by piece as the model generates it.
+
+        `tools` are JSON-schema tool definitions the model may ask to call.
+        """
 
     async def aclose(self) -> None:
         """Release resources (like HTTP connections). Override if needed."""
@@ -34,19 +39,23 @@ class LLMProvider(ABC):
         messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> ChatResult:
         """Return the whole reply at once, built on top of stream_chat."""
         start = time.perf_counter()
         first_token_at: float | None = None
         parts: list[str] = []
+        tool_calls: list[ToolCall] = []
         usage = Usage()
         finish_reason = None
 
-        async for chunk in self.stream_chat(model, messages, temperature, max_tokens):
-            if chunk.delta:
+        async for chunk in self.stream_chat(model, messages, temperature, max_tokens, tools):
+            if chunk.delta or chunk.tool_calls:
                 if first_token_at is None:
                     first_token_at = time.perf_counter()
                 parts.append(chunk.delta)
+            if chunk.tool_calls:
+                tool_calls.extend(chunk.tool_calls)
             if chunk.done:
                 usage = chunk.usage or usage
                 finish_reason = chunk.finish_reason
@@ -55,6 +64,7 @@ class LLMProvider(ABC):
         return ChatResult(
             model=model,
             content="".join(parts),
+            tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
             latency_ms=round((end - start) * 1000, 1),

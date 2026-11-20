@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,8 @@ class ToolContext:
     retrieval_top_k: int = 4
     # Chunks found by knowledge_search during this run. They become the citations.
     retrieved: list[RetrievedChunk] = field(default_factory=list)
+    # How MCP tools reach their servers. None is the real network; tests pass a fake.
+    mcp_transport: httpx.AsyncBaseTransport | None = None
 
 
 class Tool(ABC):
@@ -33,6 +36,10 @@ class Tool(ABC):
     description: str
     Args: type[BaseModel]
 
+    def parameters(self) -> dict[str, Any]:
+        """The JSON schema of the arguments. MCP tools override this with the server's schema."""
+        return self.Args.model_json_schema()
+
     def spec(self) -> dict[str, Any]:
         """The tool definition sent to the model (OpenAI/Ollama "function" format)."""
         return {
@@ -40,7 +47,7 @@ class Tool(ABC):
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.Args.model_json_schema(),
+                "parameters": self.parameters(),
             },
         }
 

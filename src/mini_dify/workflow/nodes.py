@@ -1,5 +1,3 @@
-import asyncio
-import ipaddress
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -13,6 +11,7 @@ from mini_dify.llm.base import LLMProvider
 from mini_dify.llm.embeddings import EmbeddingProvider
 from mini_dify.llm.types import Message
 from mini_dify.rag.retrieval import SearchMode, retrieve
+from mini_dify.security import UnsafeURLError, check_url_is_public
 from mini_dify.workflow.graph import Graph, GraphError, NodeConfig
 from mini_dify.workflow.variables import VariablePool, to_text
 
@@ -276,34 +275,6 @@ class IfElseNode(Node):
 # ---------- HTTP request ----------
 
 
-async def check_url_is_public(url: httpx.URL) -> None:
-    """Stop SSRF: a workflow must not be able to reach our own network.
-
-    Without this, anyone who can create a workflow could make the server call
-    http://localhost:5432, a cloud metadata address, or another internal service.
-    """
-    if url.scheme not in ("http", "https"):
-        raise NodeError(f"Only http and https URLs are allowed, not {url.scheme!r}")
-    if not url.host:
-        raise NodeError("The URL has no host")
-    port = url.port or (443 if url.scheme == "https" else 80)
-    try:
-        infos = await asyncio.get_running_loop().getaddrinfo(url.host, port)
-    except OSError as exc:
-        raise NodeError(f"Can't resolve {url.host}: {exc}") from exc
-    for info in infos:
-        address = ipaddress.ip_address(info[4][0])
-        if (
-            address.is_private
-            or address.is_loopback
-            or address.is_link_local
-            or address.is_reserved
-            or address.is_multicast
-            or address.is_unspecified
-        ):
-            raise NodeError(f"{url.host} resolves to a private address ({address}): blocked")
-
-
 MAX_BODY_CHARS = 100_000
 
 
@@ -327,7 +298,10 @@ class HttpRequestNode(Node):
         headers = {name: pool.render(value) for name, value in self.data.headers.items()}
         body = pool.render(self.data.body) if self.data.body is not None else None
         if not ctx.allow_private_http:
-            await check_url_is_public(url)
+            try:
+                await check_url_is_public(url)
+            except UnsafeURLError as exc:
+                raise NodeError(str(exc)) from exc
 
         # follow_redirects=False: a redirect could point at a private address we never checked.
         async with httpx.AsyncClient(

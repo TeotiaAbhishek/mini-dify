@@ -159,6 +159,37 @@ curl -s localhost:8000/v1/workflow-runs/<run_id>
 
 HTTP request nodes can't call private addresses (localhost, 10.x, 192.168.x, cloud metadata) unless `WORKFLOW_HTTP_ALLOW_PRIVATE=true` is set.
 
+## MCP
+
+[MCP](https://modelcontextprotocol.io) (Model Context Protocol) is a standard way for AI apps to share tools. mini-dify speaks it in both directions, over Streamable HTTP (protocol versions 2024-11-05 to 2025-11-25).
+
+**As a server:** `POST /mcp` offers every workflow as a tool. The tool's name comes from the workflow's name, and its arguments are the start node's inputs. Any MCP client can call it, for example Claude Code:
+
+```bash
+claude mcp add --transport http mini-dify http://localhost:8000/mcp
+```
+
+**As a client:** register an MCP server by URL, and give its id to an app in `mcp_server_ids`. The app's agent can then call the server's tools, named `<server name>__<tool name>`.
+
+```bash
+# Register a server: mini-dify connects, lists its tools and saves them
+curl -s localhost:8000/v1/mcp-servers -H 'content-type: application/json' \
+  -d '{"name": "deepwiki", "url": "https://mcp.deepwiki.com/mcp"}'
+
+# An agent app that can use them
+curl -s localhost:8000/v1/apps -H 'content-type: application/json' -d '{
+  "name": "Repo explainer",
+  "system_prompt": "You answer questions about GitHub repositories. Use tools.",
+  "model": "qwen2.5:7b",
+  "mcp_server_ids": ["<mcp_server_id>"]
+}'
+
+# Re-list a server's tools after it changes
+curl -s -X POST localhost:8000/v1/mcp-servers/<mcp_server_id>/refresh
+```
+
+Header values (for example an `Authorization` token) are sent to the server but never returned by the API. Like the workflow HTTP node, the client refuses private addresses unless `MCP_ALLOW_PRIVATE_URLS=true` is set, which you need for an MCP server running on your own machine.
+
 ## Database migrations
 
 Tables are managed with [Alembic](https://alembic.sqlalchemy.org). After changing `src/mini_dify/models.py`:
@@ -190,6 +221,6 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 | 3 | RAG: ingestion, chunking, embeddings, hybrid retrieval, citations | ✅ |
 | 4 | Tools and agents (function calling, ReAct) | ✅ |
 | 5 | Workflow engine (graph of LLM, retrieval, branching, template and HTTP nodes) | ✅ |
-| 6 | MCP client and server | ⏳ |
-| 7 | Tracing and evals | |
+| 6 | MCP client and server | ✅ |
+| 7 | Tracing and evals | ⏳ |
 | 8 | Public API with keys and rate limits, minimal UI | |

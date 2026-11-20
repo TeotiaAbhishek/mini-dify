@@ -9,6 +9,7 @@ from mini_dify.api.apps import router as apps_router
 from mini_dify.api.chat import router as chat_router
 from mini_dify.api.datasets import router as datasets_router
 from mini_dify.api.tools import router as tools_router
+from mini_dify.api.workflows import router as workflows_router
 from mini_dify.config import settings
 from mini_dify.llm.registry import get_embedder, get_provider
 
@@ -32,6 +33,7 @@ app.include_router(chat_router)
 app.include_router(apps_router)
 app.include_router(datasets_router)
 app.include_router(tools_router)
+app.include_router(workflows_router)
 
 
 @app.get("/health")

@@ -36,7 +36,10 @@ def clean_db(migrated_db):
         engine = create_async_engine(settings.database_url)
         async with engine.begin() as conn:
             await conn.execute(
-                text("TRUNCATE apps, conversations, messages, datasets, documents, chunks CASCADE")
+                text(
+                    "TRUNCATE apps, conversations, messages, datasets, documents, chunks, "
+                    "workflows, workflow_runs, node_runs CASCADE"
+                )
             )
         await engine.dispose()
 

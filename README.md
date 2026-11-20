@@ -123,6 +123,42 @@ With `"stream": true`, each tool call arrives as an `agent_step` event as it hap
 
 Function calling needs a model with tool support in Ollama (`qwen2.5:7b` and `llama3.2:3b` both have it). ReAct works with any model, because the tools are described in the prompt and the reply is parsed as text.
 
+## Workflows
+
+A workflow is a graph of nodes joined by edges, stored as JSON. Nodes read earlier nodes' outputs with references like `{{#start.question#}}` or `{{#llm.text#}}` (the same syntax as Dify). Node types: `start`, `llm`, `knowledge_retrieval`, `if_else`, `template`, `http_request` and `end`. Nodes that don't depend on each other run at the same time, an `if_else` node follows its `true` or `false` edge and skips the other branch, and every run is saved with each node's inputs, outputs and timing.
+
+```bash
+# Create a workflow: look a question up in a dataset, then answer from it
+curl -s localhost:8000/v1/workflows -H 'content-type: application/json' -d '{
+  "name": "Handbook Q&A",
+  "graph": {
+    "nodes": [
+      {"id": "start", "type": "start", "data": {"variables": [{"name": "question"}]}},
+      {"id": "kb", "type": "knowledge_retrieval",
+       "data": {"dataset_ids": ["<dataset_id>"], "query": "{{#start.question#}}"}},
+      {"id": "llm", "type": "llm",
+       "data": {"prompt": "Answer from this context:\n{{#kb.text#}}\n\nQuestion: {{#start.question#}}"}},
+      {"id": "end", "type": "end",
+       "data": {"outputs": [{"name": "answer", "value": "{{#llm.text#}}"}]}}
+    ],
+    "edges": [
+      {"source": "start", "target": "kb"},
+      {"source": "kb", "target": "llm"},
+      {"source": "llm", "target": "end"}
+    ]
+  }
+}'
+
+# Run it (add "stream": true to get one event per node as it happens)
+curl -s localhost:8000/v1/workflows/<workflow_id>/run -H 'content-type: application/json' \
+  -d '{"inputs": {"question": "How many vacation days do I get?"}}'
+
+# Read a past run, with every node's inputs, outputs and timing
+curl -s localhost:8000/v1/workflow-runs/<run_id>
+```
+
+HTTP request nodes can't call private addresses (localhost, 10.x, 192.168.x, cloud metadata) unless `WORKFLOW_HTTP_ALLOW_PRIVATE=true` is set.
+
 ## Database migrations
 
 Tables are managed with [Alembic](https://alembic.sqlalchemy.org). After changing `src/mini_dify/models.py`:
@@ -153,7 +189,7 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 | 2 | Chat apps, prompt templates, conversation memory | ✅ |
 | 3 | RAG: ingestion, chunking, embeddings, hybrid retrieval, citations | ✅ |
 | 4 | Tools and agents (function calling, ReAct) | ✅ |
-| 5 | Workflow engine (graph of LLM, retrieval, branching, code and HTTP nodes) | ⏳ |
-| 6 | MCP client and server | |
+| 5 | Workflow engine (graph of LLM, retrieval, branching, template and HTTP nodes) | ✅ |
+| 6 | MCP client and server | ⏳ |
 | 7 | Tracing and evals | |
 | 8 | Public API with keys and rate limits, minimal UI | |

@@ -19,5 +19,9 @@ class Settings(BaseSettings):
     embedding_document_prefix: str = "search_document: "
     embedding_query_prefix: str = "search_query: "
 
+    # Workflow HTTP nodes may not call private addresses (localhost, 10.x, 192.168.x...)
+    # unless this is on. Leave it off unless you need a workflow to call a local service.
+    workflow_http_allow_private: bool = False
+
 
 settings = Settings()

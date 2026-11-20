@@ -1,10 +1,38 @@
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
 from mini_dify.llm.base import LLMProvider
-from mini_dify.llm.types import ChatChunk, Message, ProviderError, Usage
+from mini_dify.llm.types import ChatChunk, Message, ProviderError, ToolCall, Usage
+
+
+def to_ollama_message(message: Message) -> dict[str, Any]:
+    """Convert our Message into the shape Ollama's /api/chat expects."""
+    data: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.tool_calls:
+        data["tool_calls"] = [
+            {"function": {"name": call.name, "arguments": call.arguments}}
+            for call in message.tool_calls
+        ]
+    if message.tool_name:
+        data["tool_name"] = message.tool_name
+    return data
+
+
+def parse_tool_calls(message: dict[str, Any]) -> list[ToolCall] | None:
+    """Read tool calls out of one Ollama response message, if there are any."""
+    calls = message.get("tool_calls")
+    if not calls:
+        return None
+    return [
+        ToolCall(
+            name=call["function"]["name"],
+            arguments=call["function"].get("arguments") or {},
+        )
+        for call in calls
+    ]
 
 
 class OllamaProvider(LLMProvider):
@@ -26,17 +54,20 @@ class OllamaProvider(LLMProvider):
         messages: list[Message],
         temperature: float = 0.7,
         max_tokens: int | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ChatChunk]:
         options: dict = {"temperature": temperature}
         if max_tokens is not None:
             options["num_predict"] = max_tokens
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
-            "messages": [m.model_dump() for m in messages],
+            "messages": [to_ollama_message(m) for m in messages],
             "stream": True,
             "options": options,
         }
+        if tools:
+            payload["tools"] = tools
 
         try:
             async with self.client.stream(
@@ -54,9 +85,11 @@ class OllamaProvider(LLMProvider):
                     if "error" in data:
                         raise ProviderError(f"Ollama error: {data['error']}")
 
+                    message = data.get("message", {})
                     if data.get("done"):
                         yield ChatChunk(
-                            delta=data.get("message", {}).get("content", ""),
+                            delta=message.get("content", ""),
+                            tool_calls=parse_tool_calls(message),
                             done=True,
                             finish_reason=data.get("done_reason"),
                             usage=Usage(
@@ -65,6 +98,9 @@ class OllamaProvider(LLMProvider):
                             ),
                         )
                     else:
-                        yield ChatChunk(delta=data["message"]["content"])
+                        yield ChatChunk(
+                            delta=message.get("content", ""),
+                            tool_calls=parse_tool_calls(message),
+                        )
         except httpx.HTTPError as exc:
             raise ProviderError(f"Could not reach Ollama at {self.base_url}: {exc}") from exc

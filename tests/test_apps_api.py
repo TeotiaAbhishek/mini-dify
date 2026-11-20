@@ -14,9 +14,9 @@ class RecordingProvider(FakeProvider):
     def __init__(self):
         self.prompts = []
 
-    async def stream_chat(self, model, messages, temperature=0.7, max_tokens=None):
+    async def stream_chat(self, model, messages, temperature=0.7, max_tokens=None, tools=None):
         self.prompts.append([(m.role, m.content) for m in messages])
-        async for chunk in super().stream_chat(model, messages, temperature, max_tokens):
+        async for chunk in super().stream_chat(model, messages, temperature, max_tokens, tools):
             yield chunk
 
 

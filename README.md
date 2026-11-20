@@ -97,6 +97,32 @@ curl -s localhost:8000/v1/apps -H 'content-type: application/json' \
   -d '{"name": "HR bot", "system_prompt": "You answer HR questions.", "dataset_ids": ["<dataset_id>"]}'
 ```
 
+## Agents and tools
+
+Give an app a list of `tools` and it becomes an agent: instead of answering straight away, the model can call tools, read the results and decide what to do next, until it can answer. If the app also has datasets, a `knowledge_search` tool is added automatically.
+
+```bash
+# See the available tools
+curl -s localhost:8000/v1/tools
+
+# Create an agent app (agent_mode: "function_calling" or "react")
+curl -s localhost:8000/v1/apps -H 'content-type: application/json' -d '{
+  "name": "Helper",
+  "system_prompt": "You are a helpful assistant. Use tools when they help.",
+  "tools": ["calculator", "current_time", "wikipedia"],
+  "agent_mode": "function_calling",
+  "max_iterations": 5
+}'
+
+# Chat with it: the response includes "agent_steps" (each tool call and its result)
+curl -s localhost:8000/v1/apps/<app_id>/chat-messages -H 'content-type: application/json' \
+  -d '{"query": "What is 1234 * 5678, and what day is it in Sydney?"}'
+```
+
+With `"stream": true`, each tool call arrives as an `agent_step` event as it happens, then the answer.
+
+Function calling needs a model with tool support in Ollama (`qwen2.5:7b` and `llama3.2:3b` both have it). ReAct works with any model, because the tools are described in the prompt and the reply is parsed as text.
+
 ## Database migrations
 
 Tables are managed with [Alembic](https://alembic.sqlalchemy.org). After changing `src/mini_dify/models.py`:
@@ -126,8 +152,8 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 | 1 | Model provider layer, streaming, token and latency tracking | ✅ |
 | 2 | Chat apps, prompt templates, conversation memory | ✅ |
 | 3 | RAG: ingestion, chunking, embeddings, hybrid retrieval, citations | ✅ |
-| 4 | Tools and agents (function calling, ReAct) | ⏳ |
-| 5 | Workflow engine (graph of LLM, retrieval, branching, code and HTTP nodes) | |
+| 4 | Tools and agents (function calling, ReAct) | ✅ |
+| 5 | Workflow engine (graph of LLM, retrieval, branching, code and HTTP nodes) | ⏳ |
 | 6 | MCP client and server | |
 | 7 | Tracing and evals | |
 | 8 | Public API with keys and rate limits, minimal UI | |

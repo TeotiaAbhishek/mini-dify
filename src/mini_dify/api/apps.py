@@ -23,10 +23,17 @@ from mini_dify.llm.types import ProviderError, Usage
 from mini_dify.models import App, Conversation, Dataset, MCPServer, Message
 from mini_dify.prompts import MissingVariablesError, extract_variables, render_template
 from mini_dify.rag.retrieval import RetrievedChunk, retrieve
-from mini_dify.services.agent_service import is_agent_app, load_mcp_servers, make_agent
+from mini_dify.services.agent_service import (
+    app_tools,
+    is_agent_app,
+    load_mcp_servers,
+    make_agent,
+)
 from mini_dify.services.chat_service import build_prompt, load_history
 from mini_dify.tools.base import ToolContext
 from mini_dify.tools.registry import BUILTIN_TOOLS
+from mini_dify.tracing.llm import TracedProvider
+from mini_dify.tracing.tracer import current_trace_id, span, trace
 
 router = APIRouter(prefix="/v1", tags=["apps"])
 
@@ -98,6 +105,8 @@ class ChatMessageResponse(BaseModel):
     usage: Usage
     latency_ms: float
     time_to_first_token_ms: float | None
+    # Open GET /v1/traces/{trace_id} to see every step that made this answer.
+    trace_id: uuid.UUID | None = None
 
 
 def to_citations(chunks: list[RetrievedChunk]) -> list[Citation]:
@@ -123,6 +132,7 @@ class MessageOut(BaseModel):
     prompt_tokens: int | None
     completion_tokens: int | None
     agent_steps: list[AgentStep] | None = None
+    trace_id: uuid.UUID | None = None
     created_at: datetime
 
 
@@ -134,6 +144,7 @@ async def save_turn(
     usage: Usage,
     latency_ms: float,
     agent_steps: list[AgentStep] | None = None,
+    trace_id: uuid.UUID | None = None,
 ) -> Message:
     """Store the user's question and the assistant's answer."""
     session.add(Message(conversation_id=conversation_id, role="user", content=query))
@@ -144,6 +155,7 @@ async def save_turn(
         prompt_tokens=usage.prompt_tokens,
         completion_tokens=usage.completion_tokens,
         latency_ms=latency_ms,
+        trace_id=trace_id,
         agent_steps=(
             [step.model_dump(mode="json") for step in agent_steps] if agent_steps else None
         ),
@@ -222,78 +234,111 @@ async def send_chat_message(
         session.add(conversation)
         await session.commit()
 
+    # Every LLM call made for this message is recorded in its trace.
+    provider = TracedProvider(provider)
+    sessionmaker = request.app.state.sessionmaker
+    trace_inputs = {
+        "app": app.name,
+        "app_id": str(app.id),
+        "conversation_id": str(conversation.id),
+        "query": body.query,
+    }
+
     # Agent apps take a different path: the model decides which tools to call.
     if is_agent_app(app):
         return await agent_chat(
             app, conversation, body, request, session, provider, embedder, mcp_transport
         )
 
-    # 2. Knowledge: find the chunks most relevant to the question (if the app has datasets).
-    try:
-        context = await retrieve(
-            session,
-            embedder,
-            [uuid.UUID(dataset_id) for dataset_id in app.dataset_ids],
-            body.query,
-            app.retrieval_top_k,
-        )
-    except ProviderError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    citations = to_citations(context)
-
-    # 3. Memory: the last N messages, then build what the model will see.
-    history = await load_history(session, conversation.id, app.memory_window)
-    prompt = build_prompt(app, conversation, history, body.query, context)
+    dataset_ids = [uuid.UUID(dataset_id) for dataset_id in app.dataset_ids]
     model = app.model or settings.default_model
 
-    # 4a. Whole answer at once.
+    # 2a. Whole answer at once.
     if not body.stream:
-        try:
-            result = await provider.chat(model, prompt, app.temperature)
-        except ProviderError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        async with trace("chat", "chain", trace_inputs, sessionmaker) as root:
+            # Knowledge: the chunks most relevant to the question (if the app has datasets).
+            try:
+                context = await retrieve(
+                    session, embedder, dataset_ids, body.query, app.retrieval_top_k
+                )
+            except ProviderError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-        answer = await save_turn(
-            session, conversation.id, body.query, result.content, result.usage, result.latency_ms
-        )
+            # Memory: the last N messages, then build what the model will see.
+            history = await load_history(session, conversation.id, app.memory_window)
+            prompt = build_prompt(app, conversation, history, body.query, context)
+            try:
+                result = await provider.chat(model, prompt, app.temperature)
+            except ProviderError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+            root.outputs = {"answer": result.content}
+            answer = await save_turn(
+                session,
+                conversation.id,
+                body.query,
+                result.content,
+                result.usage,
+                result.latency_ms,
+                trace_id=current_trace_id(),
+            )
         return ChatMessageResponse(
             conversation_id=conversation.id,
             message_id=answer.id,
             answer=result.content,
-            citations=citations,
+            citations=to_citations(context),
             usage=result.usage,
             latency_ms=result.latency_ms,
             time_to_first_token_ms=result.time_to_first_token_ms,
+            trace_id=answer.trace_id,
         )
 
-    # 4b. Streamed answer. Messages are saved once the stream has finished.
+    # 2b. Streamed answer. Everything happens inside the stream, so the trace covers it
+    # all, and errors arrive as an "error" event. The request's own session may already
+    # be closed by then, so the stream opens its own.
     conversation_id = conversation.id
-    sessionmaker = request.app.state.sessionmaker
 
     async def event_stream() -> AsyncIterator[str]:
         yield sse({"conversation_id": str(conversation_id)})
         start = time.perf_counter()
         parts: list[str] = []
         usage = Usage()
-        try:
-            async for chunk in provider.stream_chat(model, prompt, app.temperature):
-                parts.append(chunk.delta)
-                if chunk.usage:
-                    usage = chunk.usage
-                yield sse(chunk.model_dump(exclude_none=True))
-        except ProviderError as exc:
-            yield sse({"error": str(exc)})
-            yield "data: [DONE]\n\n"
-            return
+        async with (
+            sessionmaker() as stream_session,
+            trace("chat", "chain", trace_inputs, sessionmaker) as root,
+        ):
+            try:
+                context = await retrieve(
+                    stream_session, embedder, dataset_ids, body.query, app.retrieval_top_k
+                )
+                history = await load_history(stream_session, conversation_id, app.memory_window)
+                prompt = build_prompt(app, conversation, history, body.query, context)
+                async for chunk in provider.stream_chat(model, prompt, app.temperature):
+                    parts.append(chunk.delta)
+                    if chunk.usage:
+                        usage = chunk.usage
+                    yield sse(chunk.model_dump(exclude_none=True))
+            except ProviderError as exc:
+                root.fail(exc)
+                yield sse({"error": str(exc)})
+                yield "data: [DONE]\n\n"
+                return
 
-        # The request's own session may already be closed, so open a fresh one.
-        async with sessionmaker() as save_session:
+            root.outputs = {"answer": "".join(parts)}
             latency_ms = round((time.perf_counter() - start) * 1000, 1)
             answer = await save_turn(
-                save_session, conversation_id, body.query, "".join(parts), usage, latency_ms
+                stream_session,
+                conversation_id,
+                body.query,
+                "".join(parts),
+                usage,
+                latency_ms,
+                trace_id=current_trace_id(),
             )
+        citations = to_citations(context)
         end_event = {
             "message_id": str(answer.id),
+            "trace_id": str(answer.trace_id) if answer.trace_id else None,
             "citations": [citation.model_dump(mode="json") for citation in citations],
         }
         yield sse(end_event)
@@ -320,26 +365,49 @@ async def agent_chat(
     history = await load_history(session, conversation.id, app.memory_window)
     prompt = build_prompt(app, conversation, history, body.query)
     model = app.model or settings.default_model
+    sessionmaker = request.app.state.sessionmaker
+    trace_inputs = {
+        "app": app.name,
+        "app_id": str(app.id),
+        "conversation_id": str(conversation.id),
+        "query": body.query,
+    }
+    agent_inputs = {
+        "mode": app.agent_mode,
+        "max_iterations": app.max_iterations,
+        "tools": [tool.name for tool in app_tools(app, mcp_servers)],
+    }
 
     # Whole answer at once.
     if not body.stream:
-        ctx = ToolContext(session=session, embedder=embedder, mcp_transport=mcp_transport)
-        agent = make_agent(app, provider, model, ctx, mcp_servers)
-        start = time.perf_counter()
-        steps: list[AgentStep] = []
-        try:
-            async for event in agent.run(prompt):
-                if isinstance(event, AgentStep):
-                    steps.append(event)
-                else:
-                    final: AgentAnswer = event
-        except ProviderError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        latency_ms = round((time.perf_counter() - start) * 1000, 1)
+        async with trace("chat", "chain", trace_inputs, sessionmaker) as root:
+            ctx = ToolContext(session=session, embedder=embedder, mcp_transport=mcp_transport)
+            agent = make_agent(app, provider, model, ctx, mcp_servers)
+            start = time.perf_counter()
+            steps: list[AgentStep] = []
+            async with span("agent", "agent", agent_inputs) as agent_span:
+                try:
+                    async for event in agent.run(prompt):
+                        if isinstance(event, AgentStep):
+                            steps.append(event)
+                        else:
+                            final: AgentAnswer = event
+                except ProviderError as exc:
+                    raise HTTPException(status_code=502, detail=str(exc)) from exc
+                agent_span.outputs = {"answer": final.content, "iterations": final.iterations}
+            latency_ms = round((time.perf_counter() - start) * 1000, 1)
 
-        answer = await save_turn(
-            session, conversation.id, body.query, final.content, final.usage, latency_ms, steps
-        )
+            root.outputs = {"answer": final.content}
+            answer = await save_turn(
+                session,
+                conversation.id,
+                body.query,
+                final.content,
+                final.usage,
+                latency_ms,
+                steps,
+                trace_id=current_trace_id(),
+            )
         return ChatMessageResponse(
             conversation_id=conversation.id,
             message_id=answer.id,
@@ -349,32 +417,39 @@ async def agent_chat(
             usage=final.usage,
             latency_ms=latency_ms,
             time_to_first_token_ms=None,
+            trace_id=answer.trace_id,
         )
 
     # Streamed: one event per tool call as it happens, then the answer.
-    sessionmaker = request.app.state.sessionmaker
-
     async def event_stream() -> AsyncIterator[str]:
         yield sse({"conversation_id": str(conversation.id)})
         start = time.perf_counter()
         steps: list[AgentStep] = []
         # Tools need a database session that lives as long as this stream.
-        async with sessionmaker() as agent_session:
+        async with (
+            sessionmaker() as agent_session,
+            trace("chat", "chain", trace_inputs, sessionmaker) as root,
+        ):
             ctx = ToolContext(session=agent_session, embedder=embedder, mcp_transport=mcp_transport)
             agent = make_agent(app, provider, model, ctx, mcp_servers)
-            try:
-                async for event in agent.run(prompt):
-                    if isinstance(event, AgentStep):
-                        steps.append(event)
-                        yield sse({"agent_step": event.model_dump(mode="json")})
-                    else:
-                        final = event
-            except ProviderError as exc:
-                yield sse({"error": str(exc)})
-                yield "data: [DONE]\n\n"
-                return
+            async with span("agent", "agent", agent_inputs) as agent_span:
+                try:
+                    async for event in agent.run(prompt):
+                        if isinstance(event, AgentStep):
+                            steps.append(event)
+                            yield sse({"agent_step": event.model_dump(mode="json")})
+                        else:
+                            final = event
+                except ProviderError as exc:
+                    agent_span.fail(exc)
+                    root.fail(exc)
+                    yield sse({"error": str(exc)})
+                    yield "data: [DONE]\n\n"
+                    return
+                agent_span.outputs = {"answer": final.content, "iterations": final.iterations}
 
             yield sse({"delta": final.content, "done": True, "usage": final.usage.model_dump()})
+            root.outputs = {"answer": final.content}
             latency_ms = round((time.perf_counter() - start) * 1000, 1)
             answer = await save_turn(
                 agent_session,
@@ -384,11 +459,13 @@ async def agent_chat(
                 final.usage,
                 latency_ms,
                 steps,
+                trace_id=current_trace_id(),
             )
         citations = to_citations(ctx.retrieved)
         yield sse(
             {
                 "message_id": str(answer.id),
+                "trace_id": str(answer.trace_id) if answer.trace_id else None,
                 "citations": [citation.model_dump(mode="json") for citation in citations],
             }
         )

@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mini_dify.models import NodeRun, WorkflowRun
+from mini_dify.tracing.tracer import current_trace_id, trace
 from mini_dify.workflow.engine import (
     NodeFinished,
     WorkflowEngine,
@@ -38,18 +39,29 @@ async def run_workflow(
     workflow_id: uuid.UUID,
     graph_json: dict[str, Any],
     ctx: NodeContext,
+    name: str = "workflow",
 ) -> AsyncIterator[WorkflowEvent]:
-    """Run a workflow, saving the run and every node's result as it goes."""
+    """Run a workflow inside a trace, saving the run and every node's result as it goes."""
     graph, nodes = compile_workflow(graph_json)
-    async with sessionmaker() as session:
-        run = WorkflowRun(workflow_id=workflow_id, graph=graph_json, inputs=ctx.inputs)
+    async with (
+        sessionmaker() as session,
+        trace(f"workflow {name}", "chain", {"inputs": ctx.inputs}, sessionmaker) as root,
+    ):
+        run = WorkflowRun(
+            workflow_id=workflow_id,
+            graph=graph_json,
+            inputs=ctx.inputs,
+            trace_id=current_trace_id(),
+        )
         session.add(run)
         await session.commit()  # saved now, so the run shows up as "running" straight away
+        root.attributes = {"workflow_id": str(workflow_id), "workflow_run_id": str(run.id)}
 
         position = 0
         async for event in WorkflowEngine(graph, nodes, ctx).run():
             if isinstance(event, (WorkflowStarted, WorkflowFinished)):
                 event.workflow_run_id = run.id
+                event.trace_id = run.trace_id
             if isinstance(event, NodeFinished):
                 session.add(
                     NodeRun(
@@ -65,4 +77,7 @@ async def run_workflow(
                 run.error = event.error
                 run.elapsed_ms = event.elapsed_ms
                 await session.commit()
+                root.outputs = {"outputs": run.outputs}
+                if event.status == "failed":
+                    root.fail(event.error or "failed")
             yield event

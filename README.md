@@ -190,6 +190,29 @@ curl -s -X POST localhost:8000/v1/mcp-servers/<mcp_server_id>/refresh
 
 Header values (for example an `Authorization` token) are sent to the server but never returned by the API. Like the workflow HTTP node, the client refuses private addresses unless `MCP_ALLOW_PRIVATE_URLS=true` is set, which you need for an MCP server running on your own machine.
 
+## Tracing
+
+Every chat message, agent answer and workflow run is recorded as a **trace**: a tree of **spans**, one for each step, with its inputs, outputs, timing and any error. LLM calls also record the model, tokens and time to first token. Responses include a `trace_id`.
+
+```bash
+# The newest traces, with span counts and token totals (add ?status=error for failures)
+curl -s localhost:8000/v1/traces
+
+# One trace as a tree, with every input and output
+curl -s localhost:8000/v1/traces/<trace_id>
+
+# The same trace drawn as text
+curl -s localhost:8000/v1/traces/<trace_id>/text
+```
+
+```text
+[chain] chat  +0ms  412ms  ok
+├─ [retriever] retrieval  +2ms  35ms  ok  (3 chunks)
+└─ [llm] llm qwen2.5:7b  +40ms  370ms  ok  (412+58 tokens, first token 95ms)
+```
+
+Spans are kept in memory while the request runs and saved in one go at the end, even when it fails. Set `TRACING_ENABLED=false` to turn tracing off.
+
 ## Database migrations
 
 Tables are managed with [Alembic](https://alembic.sqlalchemy.org). After changing `src/mini_dify/models.py`:
@@ -222,5 +245,6 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 | 4 | Tools and agents (function calling, ReAct) | ✅ |
 | 5 | Workflow engine (graph of LLM, retrieval, branching, template and HTTP nodes) | ✅ |
 | 6 | MCP client and server | ✅ |
-| 7 | Tracing and evals | ⏳ |
+| 7a | Tracing: spans for LLM calls, retrieval, tools and workflow nodes | ✅ |
+| 7b | Evals | ⏳ |
 | 8 | Public API with keys and rate limits, minimal UI | |

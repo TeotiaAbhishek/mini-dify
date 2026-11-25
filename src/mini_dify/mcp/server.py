@@ -18,6 +18,7 @@ from mini_dify.mcp import protocol
 from mini_dify.mcp.protocol import JsonRpcError
 from mini_dify.models import Workflow
 from mini_dify.services.workflow_service import compile_workflow, missing_inputs, run_workflow
+from mini_dify.tracing.llm import TracedProvider
 from mini_dify.workflow.engine import WorkflowFinished
 from mini_dify.workflow.graph import GraphError
 from mini_dify.workflow.nodes import NodeContext, StartNode
@@ -119,7 +120,7 @@ async def call_tool(
 
     sessionmaker = request.app.state.sessionmaker
     ctx = NodeContext(
-        provider=provider,
+        provider=TracedProvider(provider),
         embedder=embedder,
         sessionmaker=sessionmaker,
         default_model=settings.default_model,
@@ -128,7 +129,8 @@ async def call_tool(
         allow_private_http=settings.workflow_http_allow_private,
     )
     finished = None
-    async for event in run_workflow(sessionmaker, workflow.id, workflow.graph, ctx):
+    events = run_workflow(sessionmaker, workflow.id, workflow.graph, ctx, workflow.name)
+    async for event in events:
         if isinstance(event, WorkflowFinished):
             finished = event
     assert finished is not None

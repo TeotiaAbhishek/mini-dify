@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from mini_dify.llm.base import LLMProvider
 from mini_dify.llm.types import Message, Usage
 from mini_dify.tools.base import Tool, ToolContext
+from mini_dify.tracing.tracer import span
 
 
 class AgentStep(BaseModel):
@@ -61,10 +62,18 @@ class AgentRunner(ABC):
         """Yield an AgentStep for every tool call, then exactly one AgentAnswer."""
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
-        tool = self.tools.get(name)
-        if tool is None:
-            return f"Error: unknown tool {name!r}. Available tools: {', '.join(self.tools)}"
-        return await tool.invoke(arguments, self.ctx)
+        """Run one tool call, recorded as a "tool" span. Tools return errors as text,
+        so a result starting with "Error:" marks the span as failed."""
+        async with span(name, "tool", {"arguments": arguments}) as record:
+            tool = self.tools.get(name)
+            if tool is None:
+                result = f"Error: unknown tool {name!r}. Available tools: {', '.join(self.tools)}"
+            else:
+                result = await tool.invoke(arguments, self.ctx)
+            record.outputs = {"result": result}
+            if result.startswith("Error:"):
+                record.fail(result)
+            return result
 
     def add_usage(self, usage: Usage) -> None:
         self.usage = Usage(

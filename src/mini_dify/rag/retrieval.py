@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mini_dify.llm.embeddings import EmbeddingProvider
 from mini_dify.models import Chunk, Document
+from mini_dify.tracing.tracer import span
 
 SearchMode = Literal["vector", "keyword", "hybrid"]
 
@@ -100,9 +101,35 @@ async def retrieve(
     top_k: int = 4,
     mode: SearchMode = "hybrid",
 ) -> list[RetrievedChunk]:
-    """Find the chunks most relevant to `query` in the given datasets."""
+    """Find the chunks most relevant to `query` in the given datasets.
+    Recorded as a "retriever" span, with what was found and how it scored."""
     if not dataset_ids:
         return []
+    inputs = {"query": query, "mode": mode, "top_k": top_k, "dataset_ids": dataset_ids}
+    async with span("retrieval", "retriever", inputs) as record:
+        chunks = await _search(session, embedder, dataset_ids, query, top_k, mode)
+        record.outputs = {
+            "chunks": [
+                {
+                    "filename": chunk.filename,
+                    "position": chunk.position,
+                    "score": chunk.score,
+                    "content": chunk.content,
+                }
+                for chunk in chunks
+            ]
+        }
+        return chunks
+
+
+async def _search(
+    session: AsyncSession,
+    embedder: EmbeddingProvider,
+    dataset_ids: list[uuid.UUID],
+    query: str,
+    top_k: int,
+    mode: SearchMode,
+) -> list[RetrievedChunk]:
     if mode == "keyword":
         return await keyword_search(session, dataset_ids, query, top_k)
 

@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from mini_dify.tracing.tracer import span
 from mini_dify.workflow.graph import Graph
 from mini_dify.workflow.nodes import Node, NodeContext
 from mini_dify.workflow.variables import VariablePool
@@ -19,6 +20,7 @@ NodeStatus = Literal["succeeded", "failed", "skipped"]
 class WorkflowStarted(BaseModel):
     event: Literal["workflow_started"] = "workflow_started"
     workflow_run_id: uuid.UUID | None = None  # filled in by the service that saves the run
+    trace_id: uuid.UUID | None = None
     inputs: dict[str, Any]
 
 
@@ -44,6 +46,7 @@ class NodeFinished(BaseModel):
 class WorkflowFinished(BaseModel):
     event: Literal["workflow_finished"] = "workflow_finished"
     workflow_run_id: uuid.UUID | None = None
+    trace_id: uuid.UUID | None = None
     status: Literal["succeeded", "failed"]
     outputs: dict[str, Any] = {}
     error: str | None = None
@@ -144,6 +147,17 @@ class WorkflowEngine:
         yield WorkflowFinished(status="succeeded", outputs=outputs, elapsed_ms=elapsed_since(start))
 
     async def _execute(self, node: Node, pool: VariablePool) -> tuple[NodeFinished, str]:
+        """Run one node inside its own span, so the trace shows every node with its
+        inputs and outputs, and the LLM calls or searches it made as its children."""
+        async with span(node.title, "chain") as record:
+            record.attributes = {"node_id": node.id, "node_type": node.type}
+            finished, handle = await self._run_node(node, pool)
+            record.inputs, record.outputs = finished.inputs, finished.outputs
+            if finished.status == "failed":
+                record.fail(finished.error or "failed")
+        return finished, handle
+
+    async def _run_node(self, node: Node, pool: VariablePool) -> tuple[NodeFinished, str]:
         """Run one node and turn any error into a failed result (never raises).
         Also returns the handle whose edges to follow next."""
         start = time.perf_counter()

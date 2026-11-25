@@ -27,5 +27,8 @@ class Settings(BaseSettings):
     # machine, like mini-dify's own /mcp endpoint.
     mcp_allow_private_urls: bool = False
 
+    # Record a trace (a tree of timed spans) for every chat message and workflow run.
+    tracing_enabled: bool = True
+
 
 settings = Settings()

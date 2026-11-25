@@ -82,6 +82,9 @@ class Message(Base):
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     # For agent answers: the tool calls made on the way to the answer.
     agent_steps: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    # The trace of how this answer was made (for assistant messages). Not a foreign key:
+    # spans are written after the message, and tracing can be switched off.
+    trace_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -181,6 +184,7 @@ class WorkflowRun(Base):
     outputs: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     elapsed_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trace_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -225,3 +229,38 @@ class MCPServer(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class Span(Base):
+    """One timed step of a trace: an LLM call, a search, a tool call, a workflow node...
+
+    Spans form a tree through parent_id. The root span has no parent, and its id is
+    the trace's id.
+    """
+
+    __tablename__ = "spans"
+    __table_args__ = (
+        Index("ix_spans_trace_position", "trace_id", "position"),
+        # Lists the newest traces fast: only root spans are in this index.
+        Index(
+            "ix_spans_roots_started",
+            "started_at",
+            postgresql_where=text("parent_id IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
+    trace_id: Mapped[uuid.UUID]
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    name: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(20))
+    status: Mapped[str] = mapped_column(String(10))
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    outputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Numbers worth adding up or filtering on: model, tokens, time to first token...
+    attributes: Mapped[dict] = mapped_column(JSON, default=dict)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[float] = mapped_column(Float)
+    position: Mapped[int] = mapped_column(Integer)

@@ -18,6 +18,7 @@ from mini_dify.llm.embeddings import EmbeddingProvider
 from mini_dify.llm.registry import get_embedder, get_provider
 from mini_dify.models import NodeRun, Workflow, WorkflowRun
 from mini_dify.services.workflow_service import compile_workflow, missing_inputs, run_workflow
+from mini_dify.tracing.llm import TracedProvider
 from mini_dify.workflow.graph import GraphError, GraphSpec
 from mini_dify.workflow.nodes import NodeContext
 
@@ -81,6 +82,7 @@ class WorkflowRunOut(BaseModel):
     outputs: dict[str, Any] | None
     error: str | None
     elapsed_ms: float | None
+    trace_id: uuid.UUID | None
     created_at: datetime
     node_runs: list[NodeRunOut]
 
@@ -110,6 +112,7 @@ async def load_run(session: AsyncSession, run_id: uuid.UUID) -> WorkflowRunOut:
         outputs=run.outputs,
         error=run.error,
         elapsed_ms=run.elapsed_ms,
+        trace_id=run.trace_id,
         created_at=run.created_at,
         node_runs=[NodeRunOut.model_validate(node_run) for node_run in node_runs],
     )
@@ -175,7 +178,7 @@ async def run(
 
     sessionmaker = request.app.state.sessionmaker
     ctx = NodeContext(
-        provider=provider,
+        provider=TracedProvider(provider),
         embedder=embedder,
         sessionmaker=sessionmaker,
         default_model=settings.default_model,
@@ -183,7 +186,7 @@ async def run(
         http_transport=transport,
         allow_private_http=settings.workflow_http_allow_private,
     )
-    events = run_workflow(sessionmaker, workflow.id, workflow.graph, ctx)
+    events = run_workflow(sessionmaker, workflow.id, workflow.graph, ctx, workflow.name)
 
     # Whole run at once: wait for the end, then return the saved record.
     if not body.stream:

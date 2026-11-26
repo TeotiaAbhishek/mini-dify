@@ -83,6 +83,8 @@ class ChatMessageRequest(BaseModel):
     inputs: dict[str, str] = {}
     conversation_id: uuid.UUID | None = None
     stream: bool = False
+    # Who is asking, for apps used through the public API. Saved on new conversations.
+    user: str | None = Field(default=None, max_length=100)
 
 
 class Citation(BaseModel):
@@ -230,7 +232,7 @@ async def send_chat_message(
             render_template(app.system_prompt, body.inputs)  # fail early if inputs are missing
         except MissingVariablesError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        conversation = Conversation(app_id=app.id, inputs=body.inputs)
+        conversation = Conversation(app_id=app.id, inputs=body.inputs, end_user=body.user)
         session.add(conversation)
         await session.commit()
 

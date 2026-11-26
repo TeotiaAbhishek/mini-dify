@@ -1,15 +1,20 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import redis.asyncio as redis
 from fastapi import FastAPI, Request
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from mini_dify.api.api_keys import router as api_keys_router
 from mini_dify.api.apps import router as apps_router
 from mini_dify.api.chat import router as chat_router
 from mini_dify.api.datasets import router as datasets_router
 from mini_dify.api.evals import router as evals_router
 from mini_dify.api.mcp_servers import router as mcp_servers_router
+from mini_dify.api.public import router as public_router
 from mini_dify.api.tools import router as tools_router
 from mini_dify.api.traces import router as traces_router
 from mini_dify.api.workflows import router as workflows_router
@@ -42,6 +47,16 @@ app.include_router(mcp_servers_router)
 app.include_router(mcp_router)
 app.include_router(traces_router)
 app.include_router(evals_router)
+app.include_router(api_keys_router)
+app.include_router(public_router)
+
+# The chat page, a single HTML file that talks to the public API.
+app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="ui")
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    return RedirectResponse("/ui/")
 
 
 @app.get("/health")

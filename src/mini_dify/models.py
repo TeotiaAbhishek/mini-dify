@@ -63,6 +63,9 @@ class Conversation(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     app_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apps.id", ondelete="CASCADE"), index=True)
     inputs: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    # Who this conversation belongs to, for conversations started through the public
+    # API: the caller's own id for its user. None for conversations from the console.
+    end_user: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -342,3 +345,24 @@ class EvalResult(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     # The answer's trace: open it to see why a case failed.
     trace_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+
+
+class ApiKey(Base):
+    """A secret key that lets another program use one app through the public API.
+
+    Only a hash of the key is stored. The key itself is shown once, when it's created.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    app_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apps.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    # The first characters of the key, so people can tell their keys apart.
+    prefix: Mapped[str] = mapped_column(String(20))
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # Requests per minute. None means the RATE_LIMIT_PER_MINUTE setting.
+    rate_limit_per_minute: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

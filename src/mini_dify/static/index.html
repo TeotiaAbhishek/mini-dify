@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mini-dify chat</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280;
+      --line: #e3e6eb; --accent: #2f6fed; --user: #e8f0fe; --error: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #14171c; --panel: #1d2128; --text: #e6e8eb; --muted: #9aa3ae;
+        --line: #2c323b; --accent: #6c9bff; --user: #23314d; --error: #ff6b6b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    main { max-width: 760px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 100vh; }
+    header, .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+    header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    h1 { font-size: 17px; margin: 0 auto 0 0; }
+    input, button { font: inherit; color: inherit; }
+    input { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+    button { border: 0; border-radius: 8px; padding: 8px 14px; background: var(--accent); color: #fff; cursor: pointer; }
+    button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #key { flex: 1 1 220px; }
+    #inputs { display: flex; flex-wrap: wrap; gap: 8px; }
+    #inputs:empty { display: none; }
+    #inputs label { display: flex; flex-direction: column; font-size: 13px; color: var(--muted); flex: 1 1 160px; }
+    #log { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+    .msg { padding: 10px 12px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .user { background: var(--user); align-self: flex-end; max-width: 85%; }
+    .assistant { background: var(--panel); border: 1px solid var(--line); }
+    .meta, .step, .hint { font-size: 13px; color: var(--muted); }
+    .step { margin: 0 0 6px; }
+    .error { color: var(--error); }
+    details { margin-top: 6px; font-size: 13px; }
+    details p { margin: 4px 0; color: var(--muted); }
+    form { display: flex; gap: 8px; position: sticky; bottom: 0; background: var(--bg); padding: 8px 0; }
+    #query { flex: 1; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">mini-dify chat</h1>
+    <input id="key" type="password" placeholder="API key (mdk-...)" autocomplete="off">
+    <button id="connect">Connect</button>
+    <button id="new" class="secondary" disabled>New chat</button>
+  </header>
+  <div id="inputs"></div>
+  <div id="log"><p class="hint">Paste an API key for one of your apps and press Connect.</p></div>
+  <form id="ask">
+    <input id="query" placeholder="Ask something..." autocomplete="off" disabled>
+    <button id="send" disabled>Send</button>
+  </form>
+  <p class="meta" id="status"></p>
+</main>
+<script>
+// This page only uses the public API (/public/v1), with the key you paste.
+// The key is kept in this browser's localStorage, so you don't have to paste it again.
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(name) { try { return localStorage.getItem(name); } catch { return null; } },
+  set(name, value) { try { localStorage.setItem(name, value); } catch { /* private window */ } },
+};
+
+// Conversations belong to a "user": any id the caller chooses. We make one per browser.
+let user = store.get("mini-dify-user");
+if (!user) {
+  user = "browser-" + crypto.randomUUID().slice(0, 8);
+  store.set("mini-dify-user", user);
+}
+let apiKey = store.get("mini-dify-key") || "";
+let conversationId = null;
+let variables = [];
+$("key").value = apiKey;
+
+function headers() {
+  return { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" };
+}
+
+function showRateLimit(response) {
+  const remaining = response.headers.get("X-RateLimit-Remaining");
+  const limit = response.headers.get("X-RateLimit-Limit");
+  if (remaining !== null) $("status").textContent = `${remaining} of ${limit} requests left this minute · user ${user}`;
+}
+
+async function errorText(response) {
+  let detail = response.statusText;
+  try { detail = (await response.json()).detail; } catch { /* not JSON */ }
+  if (response.status === 429) detail += ` (try again in ${response.headers.get("Retry-After")} s)`;
+  return `${response.status}: ${detail}`;
+}
+
+function addMessage(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  // textContent, never innerHTML: the model's text is shown as text, so it can't inject HTML.
+  div.textContent = text;
+  $("log").append(div);
+  div.scrollIntoView({ block: "end" });
+  return div;
+}
+
+function newChat() {
+  conversationId = null;
+  $("log").replaceChildren();
+  $("inputs").querySelectorAll("input").forEach((input) => (input.disabled = false));
+  $("query").focus();
+}
+
+async function connect() {
+  apiKey = $("key").value.trim();
+  const response = await fetch("/public/v1/info", { headers: headers() });
+  if (!response.ok) {
+    $("log").replaceChildren();
+    addMessage("assistant error", await errorText(response));
+    return;
+  }
+  store.set("mini-dify-key", apiKey);
+  showRateLimit(response);
+  const app = await response.json();
+  $("title").textContent = `${app.name} (${app.mode})`;
+  variables = app.variables;
+  // One field per variable of the app's system prompt, like {{name}}.
+  $("inputs").replaceChildren(...variables.map((name) => {
+    const label = document.createElement("label");
+    label.textContent = name;
+    const input = document.createElement("input");
+    input.name = name;
+    label.append(input);
+    return label;
+  }));
+  for (const id of ["query", "send", "new"]) $(id).disabled = false;
+  newChat();
+}
+
+function handleEvent(event, bubble) {
+  const text = bubble.querySelector(".text");
+  if (event.conversation_id) {
+    conversationId = event.conversation_id;
+    // The inputs are fixed once a conversation has started.
+    $("inputs").querySelectorAll("input").forEach((input) => (input.disabled = true));
+  } else if (event.agent_step) {
+    const step = document.createElement("p");
+    step.className = "step";
+    const s = event.agent_step;
+    step.textContent = `🔧 ${s.tool}(${JSON.stringify(s.arguments)}) → ${s.observation.slice(0, 120)}`;
+    text.before(step);
+  } else if (event.error) {
+    text.textContent += `\n${event.error}`;
+    bubble.classList.add("error");
+  } else if (event.message_id) {
+    // The last event: citations and the trace of this answer.
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    const n = event.citations.length;
+    summary.textContent = n ? `${n} source${n === 1 ? "" : "s"}` : "details";
+    details.append(summary);
+    for (const c of event.citations) {
+      const p = document.createElement("p");
+      p.textContent = `[${c.number}] ${c.filename}: ${c.content.slice(0, 200)}`;
+      details.append(p);
+    }
+    if (event.trace_id) {
+      const link = document.createElement("a");
+      link.href = `/v1/traces/${event.trace_id}/text`;
+      link.target = "_blank";
+      link.textContent = "trace";
+      details.append(link);
+    }
+    bubble.append(details);
+  } else if (event.delta !== undefined) {
+    text.textContent += event.delta;
+  }
+}
+
+async function ask(query) {
+  addMessage("user", query);
+  const bubble = addMessage("assistant", "");
+  const text = document.createElement("span");
+  text.className = "text";
+  bubble.append(text);
+  const inputs = {};
+  $("inputs").querySelectorAll("input").forEach((input) => (inputs[input.name] = input.value));
+
+  const body = { query, user, stream: true, conversation_id: conversationId, inputs };
+  const response = await fetch("/public/v1/chat-messages", {
+    method: "POST", headers: headers(), body: JSON.stringify(body),
+  });
+  showRateLimit(response);
+  if (!response.ok) {
+    text.textContent = await errorText(response);
+    bubble.classList.add("error");
+    return;
+  }
+
+  // Read the Server-Sent Events as they arrive. Events end with a blank line ("\n\n"),
+  // and a network chunk can hold half an event, so keep the rest for the next chunk.
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    const events = buffer.split("\n\n");
+    buffer = events.pop();
+    for (const raw of events) {
+      const data = raw.replace(/^data: /, "");
+      if (data === "[DONE]") return;
+      handleEvent(JSON.parse(data), bubble);
+      bubble.scrollIntoView({ block: "end" });
+    }
+  }
+}
+
+$("connect").addEventListener("click", connect);
+$("new").addEventListener("click", newChat);
+$("ask").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const query = $("query").value.trim();
+  if (!query) return;
+  $("query").value = "";
+  $("send").disabled = true;
+  try { await ask(query); }
+  catch (err) { addMessage("assistant error", String(err)); }
+  finally { $("send").disabled = false; $("query").focus(); }
+});
+if (apiKey) connect();
+</script>
+</body>
+</html>

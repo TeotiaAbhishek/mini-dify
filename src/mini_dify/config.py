@@ -30,5 +30,8 @@ class Settings(BaseSettings):
     # Record a trace (a tree of timed spans) for every chat message and workflow run.
     tracing_enabled: bool = True
 
+    # Public API: requests per minute for each API key, unless the key sets its own.
+    rate_limit_per_minute: int = 60
+
 
 settings = Settings()

@@ -237,6 +237,38 @@ curl -s localhost:8000/v1/eval-runs/<run_id>
 curl -s "localhost:8000/v1/eval-runs/<run_id>/compare?baseline=<earlier_run_id>"
 ```
 
+## Public API and chat page
+
+Each app can have **API keys**, so other programs (a website, a script, a Slack bot) can use it without the console. A key works for one app only, and the full key is shown once, when it's created: only its SHA-256 hash is stored.
+
+```bash
+# Create a key (save "key" from the reply: it's never shown again)
+curl -s localhost:8000/v1/apps/<app_id>/api-keys -H 'content-type: application/json' \
+  -d '{"name": "website", "rate_limit_per_minute": 30}'
+
+# List an app's keys (without the keys themselves), and revoke one
+curl -s localhost:8000/v1/apps/<app_id>/api-keys
+curl -s -X DELETE localhost:8000/v1/api-keys/<api_key_id>
+```
+
+The public API lives under `/public/v1` and takes the key as a Bearer token. `user` is your own id for the person asking: conversations belong to it, and other users can't read or continue them.
+
+```bash
+KEY=mdk-...
+curl -s localhost:8000/public/v1/info -H "Authorization: Bearer $KEY"
+curl -s localhost:8000/public/v1/chat-messages -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"query": "Hello!", "user": "alice"}'
+curl -s "localhost:8000/public/v1/conversations?user=alice" -H "Authorization: Bearer $KEY"
+curl -s "localhost:8000/public/v1/conversations/<conversation_id>/messages?user=alice" \
+  -H "Authorization: Bearer $KEY"
+```
+
+Every key is limited to `RATE_LIMIT_PER_MINUTE` requests per minute (60 by default) unless it sets its own, counted in Redis over a sliding 60 second window. Responses carry `X-RateLimit-Limit` and `X-RateLimit-Remaining`. Over the limit you get `429` with `Retry-After`.
+
+**Chat page:** open http://localhost:8000/ (it redirects to `/ui/`), paste a key and chat. It streams answers, shows tool calls and sources, and links each answer's trace. It's one HTML file, `src/mini_dify/static/index.html`, with no build step.
+
+The console endpoints (`/v1/...`) have no login: keep mini-dify on localhost, or put it behind something that checks who's calling, before exposing it.
+
 ## Database migrations
 
 Tables are managed with [Alembic](https://alembic.sqlalchemy.org). After changing `src/mini_dify/models.py`:
@@ -271,4 +303,4 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 | 6 | MCP client and server | ✅ |
 | 7a | Tracing: spans for LLM calls, retrieval, tools and workflow nodes | ✅ |
 | 7b | Evals: eval sets, scored runs, LLM judge, run comparison | ✅ |
-| 8 | Public API with keys and rate limits, minimal UI | |
+| 8 | Public API with keys and rate limits, minimal UI | ✅ |

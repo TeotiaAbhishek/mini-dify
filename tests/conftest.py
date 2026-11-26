@@ -6,6 +6,8 @@ import os
 os.environ.setdefault(
     "DATABASE_URL", "postgresql+asyncpg://minidify:minidify@localhost:5432/minidify_test"
 )
+# The same for Redis: database 15 instead of 0, so rate limit counters stay apart.
+os.environ.setdefault("REDIS_URL", "redis://localhost:6379/15")
 
 import pytest
 from alembic import command
@@ -39,7 +41,7 @@ def clean_db(migrated_db):
                 text(
                     "TRUNCATE apps, conversations, messages, datasets, documents, chunks, "
                     "workflows, workflow_runs, node_runs, mcp_servers, spans, "
-                    "eval_sets, eval_cases, eval_runs, eval_results CASCADE"
+                    "eval_sets, eval_cases, eval_runs, eval_results, api_keys CASCADE"
                 )
             )
         await engine.dispose()

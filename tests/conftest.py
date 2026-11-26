@@ -38,7 +38,8 @@ def clean_db(migrated_db):
             await conn.execute(
                 text(
                     "TRUNCATE apps, conversations, messages, datasets, documents, chunks, "
-                    "workflows, workflow_runs, node_runs, mcp_servers, spans CASCADE"
+                    "workflows, workflow_runs, node_runs, mcp_servers, spans, "
+                    "eval_sets, eval_cases, eval_runs, eval_results CASCADE"
                 )
             )
         await engine.dispose()

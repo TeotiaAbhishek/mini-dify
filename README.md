@@ -213,6 +213,30 @@ curl -s localhost:8000/v1/traces/<trace_id>/text
 
 Spans are kept in memory while the request runs and saved in one go at the end, even when it fails. Set `TRACING_ENABLED=false` to turn tracing off.
 
+## Evals
+
+An **eval set** is a list of test questions, each with what a good answer looks like. Running it against an app answers every question through the app's normal API, scores the answers, and sums them up. Run it again after changing the prompt, the model or the knowledge, and compare: you see which questions got better or worse.
+
+Each case can have:
+- `must_include`: phrases the answer must contain (scored as the share found)
+- `expected_sources`: files that should be among the answer's citations (`source_recall`)
+- `expected_answer`: a reference answer, for an LLM **judge** to grade from 1 to 5 (when the run has `"judge": true`)
+
+A case passes when every metric it has is perfect (the judge needs 4 or more). Latency and tokens are recorded too, and every answer keeps its `trace_id`.
+
+```bash
+# An eval set from a file (see examples/hr/)
+curl -s localhost:8000/v1/eval-sets -H 'content-type: application/json' -d @examples/hr/eval-set.json
+
+# Run it against an app (it runs in the background: poll until "status" isn't "running")
+curl -s localhost:8000/v1/eval-sets/<eval_set_id>/runs -H 'content-type: application/json' \
+  -d '{"app_id": "<app_id>", "judge": true, "judge_model": "qwen2.5:14b"}'
+curl -s localhost:8000/v1/eval-runs/<run_id>
+
+# What changed since an earlier run of the same set: regressions and fixes
+curl -s "localhost:8000/v1/eval-runs/<run_id>/compare?baseline=<earlier_run_id>"
+```
+
 ## Database migrations
 
 Tables are managed with [Alembic](https://alembic.sqlalchemy.org). After changing `src/mini_dify/models.py`:
@@ -246,5 +270,5 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 | 5 | Workflow engine (graph of LLM, retrieval, branching, template and HTTP nodes) | ✅ |
 | 6 | MCP client and server | ✅ |
 | 7a | Tracing: spans for LLM calls, retrieval, tools and workflow nodes | ✅ |
-| 7b | Evals | ⏳ |
+| 7b | Evals: eval sets, scored runs, LLM judge, run comparison | ✅ |
 | 8 | Public API with keys and rate limits, minimal UI | |

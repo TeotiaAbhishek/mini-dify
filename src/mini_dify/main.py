@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from mini_dify.api.apps import router as apps_router
 from mini_dify.api.chat import router as chat_router
 from mini_dify.api.datasets import router as datasets_router
+from mini_dify.api.evals import router as evals_router
 from mini_dify.api.mcp_servers import router as mcp_servers_router
 from mini_dify.api.tools import router as tools_router
 from mini_dify.api.traces import router as traces_router
@@ -40,6 +41,7 @@ app.include_router(workflows_router)
 app.include_router(mcp_servers_router)
 app.include_router(mcp_router)
 app.include_router(traces_router)
+app.include_router(evals_router)
 
 
 @app.get("/health")

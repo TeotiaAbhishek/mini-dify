@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
+    Boolean,
     Computed,
     DateTime,
     Float,
@@ -264,3 +265,80 @@ class Span(Base):
     ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     duration_ms: Mapped[float] = mapped_column(Float)
     position: Mapped[int] = mapped_column(Integer)
+
+
+class EvalSet(Base):
+    """A named list of test questions (cases) to run against an app."""
+
+    __tablename__ = "eval_sets"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100))
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class EvalCase(Base):
+    """One test question, and what a good answer looks like."""
+
+    __tablename__ = "eval_cases"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    eval_set_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("eval_sets.id", ondelete="CASCADE"), index=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    query: Mapped[str] = mapped_column(Text)
+    # Values for the app's {{variables}}, if it has any.
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    # A reference answer for the LLM judge to compare against (optional).
+    expected_answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Words or phrases the answer must contain (optional).
+    must_include: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # Filenames the answer should cite (optional).
+    expected_sources: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+
+class EvalRun(Base):
+    """One run of an eval set against one app, with its summary once it's done."""
+
+    __tablename__ = "eval_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    eval_set_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("eval_sets.id", ondelete="CASCADE"), index=True
+    )
+    app_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("apps.id", ondelete="CASCADE"))
+    # A copy of the app's settings when the run started, so you can tell later
+    # what changed between two runs.
+    app_config: Mapped[dict] = mapped_column(JSON)
+    judge_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="running")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EvalResult(Base):
+    """How the app did on one case in one run."""
+
+    __tablename__ = "eval_results"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("eval_runs.id", ondelete="CASCADE"), index=True
+    )
+    case_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("eval_cases.id", ondelete="CASCADE"))
+    position: Mapped[int] = mapped_column(Integer)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Each metric's value, e.g. {"contains": 1.0, "source_recall": 0.5, "judge": 4}.
+    scores: Mapped[dict] = mapped_column(JSON, default=dict)
+    judge_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    passed: Mapped[bool] = mapped_column(Boolean)
+    latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    # The answer's trace: open it to see why a case failed.
+    trace_id: Mapped[uuid.UUID | None] = mapped_column(nullable=True)

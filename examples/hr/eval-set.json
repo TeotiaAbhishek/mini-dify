@@ -1,0 +1,46 @@
+{
+  "name": "HR handbook",
+  "description": "Questions about leave.txt and expenses.txt",
+  "cases": [
+    {
+      "query": "How many vacation days do I get per year?",
+      "expected_answer": "25 vacation days per year.",
+      "must_include": ["25"],
+      "expected_sources": ["leave.txt"]
+    },
+    {
+      "query": "When do unused vacation days expire?",
+      "expected_answer": "On March 31 of the following year.",
+      "must_include": ["March 31"],
+      "expected_sources": ["leave.txt"]
+    },
+    {
+      "query": "How many days can I be sick before I need a doctor's note?",
+      "expected_answer": "Up to 3 days in a row; from the fourth day a doctor's note is needed.",
+      "must_include": ["3"],
+      "expected_sources": ["leave.txt"]
+    },
+    {
+      "query": "What is the daily meal allowance on a business trip?",
+      "expected_answer": "40 euros per day.",
+      "must_include": ["40"],
+      "expected_sources": ["expenses.txt"]
+    },
+    {
+      "query": "How long do I have to submit an expense report?",
+      "expected_answer": "Within 30 days of the purchase, with a photo of each receipt.",
+      "must_include": ["30"],
+      "expected_sources": ["expenses.txt"]
+    },
+    {
+      "query": "Can I fly business class to a meeting that is a 2 hour flight away?",
+      "expected_answer": "No. Business class is only allowed for flights longer than 6 hours, so book economy (or a train if the trip is under 4 hours).",
+      "must_include": ["6 hours"],
+      "expected_sources": ["expenses.txt"]
+    },
+    {
+      "query": "What is the company's share price today?",
+      "expected_answer": "The handbook doesn't say; the assistant should say it doesn't know rather than invent a number."
+    }
+  ]
+}

@@ -8,6 +8,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mini_dify.api.console_auth import console_headers
 from mini_dify.evals.judge import judge_answer
 from mini_dify.evals.metrics import case_passed, contains_score, source_recall, summarize
 from mini_dify.llm.base import LLMProvider
@@ -118,7 +119,10 @@ async def run_eval(
 
         try:
             async with httpx.AsyncClient(
-                transport=transport, base_url="http://mini-dify", timeout=APP_CALL_TIMEOUT
+                transport=transport,
+                base_url="http://mini-dify",
+                headers=console_headers(),  # the chat endpoint is part of the console API
+                timeout=APP_CALL_TIMEOUT,
             ) as client:
                 results = await asyncio.gather(*(one(case) for case in cases))
             run.summary = summarize(list(results))

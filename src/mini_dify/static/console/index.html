@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mini-dify console</title>
+  <link rel="stylesheet" href="console.css">
+  <!-- type="module": the browser loads main.js and everything it imports. No build step. -->
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <nav id="nav">
+    <a class="brand" href="#/apps">mini-dify</a>
+    <a href="#/apps" data-section="apps">Apps</a>
+    <a href="#/knowledge" data-section="knowledge">Knowledge</a>
+    <a href="#/workflows" data-section="workflows">Workflows</a>
+    <a href="#/traces" data-section="traces">Traces</a>
+    <a href="#/evals" data-section="evals">Evals</a>
+    <a href="#/mcp" data-section="mcp">MCP servers</a>
+    <span class="spacer"></span>
+    <a href="/ui/" target="_blank">Chat page ↗</a>
+    <a href="/docs" target="_blank">API docs ↗</a>
+  </nav>
+  <main id="view"></main>
+</body>
+</html>

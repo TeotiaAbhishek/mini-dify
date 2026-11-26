@@ -8,6 +8,9 @@ os.environ.setdefault(
 )
 # The same for Redis: database 15 instead of 0, so rate limit counters stay apart.
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/15")
+# Tests run without the console token, even if your .env sets one (an environment
+# variable beats .env). The tests that need a token turn it on themselves.
+os.environ["CONSOLE_TOKEN"] = ""
 
 import pytest
 from alembic import command

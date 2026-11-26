@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import redis.asyncio as redis
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from mini_dify.api.api_keys import router as api_keys_router
 from mini_dify.api.apps import router as apps_router
 from mini_dify.api.chat import router as chat_router
+from mini_dify.api.console_auth import require_console_token
 from mini_dify.api.datasets import router as datasets_router
 from mini_dify.api.evals import router as evals_router
 from mini_dify.api.mcp_servers import router as mcp_servers_router
@@ -38,25 +39,36 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="mini-dify", lifespan=lifespan)
-app.include_router(chat_router)
-app.include_router(apps_router)
-app.include_router(datasets_router)
-app.include_router(tools_router)
-app.include_router(workflows_router)
-app.include_router(mcp_servers_router)
-app.include_router(mcp_router)
-app.include_router(traces_router)
-app.include_router(evals_router)
-app.include_router(api_keys_router)
+
+# The console API: everything for building apps. Guarded by CONSOLE_TOKEN when it's set.
+console = [Depends(require_console_token)]
+for router in (
+    chat_router,
+    apps_router,
+    datasets_router,
+    tools_router,
+    workflows_router,
+    mcp_servers_router,
+    mcp_router,
+    traces_router,
+    evals_router,
+    api_keys_router,
+):
+    app.include_router(router, dependencies=console)
+
+# The public API: authenticated with per-app API keys instead.
 app.include_router(public_router)
 
-# The chat page, a single HTML file that talks to the public API.
-app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="ui")
+STATIC = Path(__file__).parent / "static"
+# The console page (for you) and the chat page (for the users of one app). The pages
+# themselves are public files; the data they show comes from the APIs above.
+app.mount("/console", StaticFiles(directory=STATIC / "console", html=True), name="console")
+app.mount("/ui", StaticFiles(directory=STATIC, html=True), name="ui")
 
 
 @app.get("/", include_in_schema=False)
 async def root() -> RedirectResponse:
-    return RedirectResponse("/ui/")
+    return RedirectResponse("/console/")
 
 
 @app.get("/health")

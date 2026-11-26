@@ -4,6 +4,8 @@ A small, from-scratch rebuild of an LLM app platform in the style of [Dify](http
 
 This is a learning project, not a production fork. Each phase is a separate PR, and each one is tied to the part of Dify's codebase it mirrors.
 
+![The console: chatting with an app that answers from an HR handbook](docs/images/console-chat.png)
+
 ## Stack
 
 - **API:** Python 3.12, FastAPI, uvicorn
@@ -26,6 +28,7 @@ uv run uvicorn mini_dify.main:app --reload --app-dir src
 
 Then:
 
+- http://localhost:8000/: the console (see [Console](#console))
 - http://localhost:8000/health: liveness check
 - http://localhost:8000/ready: readiness check (Postgres, pgvector, Redis)
 - http://localhost:8000/docs: interactive API docs
@@ -265,9 +268,38 @@ curl -s "localhost:8000/public/v1/conversations/<conversation_id>/messages?user=
 
 Every key is limited to `RATE_LIMIT_PER_MINUTE` requests per minute (60 by default) unless it sets its own, counted in Redis over a sliding 60 second window. Responses carry `X-RateLimit-Limit` and `X-RateLimit-Remaining`. Over the limit you get `429` with `Retry-After`.
 
-**Chat page:** open http://localhost:8000/ (it redirects to `/ui/`), paste a key and chat. It streams answers, shows tool calls and sources, and links each answer's trace. It's one HTML file, `src/mini_dify/static/index.html`, with no build step.
+**Chat page:** open http://localhost:8000/ui/, paste a key and chat. It streams answers, shows tool calls and sources, and links each answer's trace. It's one HTML file, `src/mini_dify/static/index.html`, with no build step.
 
-The console endpoints (`/v1/...`) have no login: keep mini-dify on localhost, or put it behind something that checks who's calling, before exposing it.
+![The chat page, answering with sources](docs/images/chat-page.png)
+
+## Console
+
+http://localhost:8000/ opens the console, a web page for everything above: no curl needed. It's plain JavaScript modules in `src/mini_dify/static/console/`, with no build step, and it only uses the same `/v1` API you can call yourself.
+
+| Page | What you can do |
+|---|---|
+| Apps | Create and edit apps (prompt, model, knowledge, tools, MCP servers), chat with them, make API keys, read every conversation (from the console, the public API or evals) |
+| Knowledge | Create datasets, upload documents, watch them index, read their chunks, test retrieval |
+| Workflows | Edit a workflow's graph as JSON, run it and watch each node finish |
+| Traces | Every answer and run as a waterfall of spans, with each span's inputs and outputs |
+| Evals | Create eval sets, run them against an app, compare a run with an earlier one |
+| MCP servers | Connect remote MCP servers and see their tools |
+
+Three API endpoints were added for it: `PUT /v1/apps/{id}` (edit), `DELETE /v1/apps/{id}` (deletes its conversations, keys and eval runs too) and `GET /v1/apps/{id}/conversations` (the logs).
+
+| | |
+|---|---|
+| ![Trace waterfall](docs/images/console-trace.png) | ![Workflow run](docs/images/console-workflow.png) |
+| ![Retrieval test](docs/images/console-knowledge.png) | ![Eval run compared with a baseline](docs/images/console-evals.png) |
+
+**Console token.** By default the console and its API (`/v1/...` and `/mcp`) have no login, which is fine on your own machine. Before anyone else can reach mini-dify, set `CONSOLE_TOKEN` in `.env`: every console API call then needs `Authorization: Bearer <token>`, and the console asks for the token once and keeps it in the browser. The public API keeps using API keys, and `/health` stays open.
+
+**Screenshots.** `scripts/screenshots.py` fills mini-dify with the examples in `examples/hr/`, drives the console and the chat page in a headless browser with your real models, and saves the images above to `docs/images/`:
+
+```bash
+uv run --with playwright playwright install chromium   # once
+uv run --with playwright python scripts/screenshots.py qwen2.5:7b
+```
 
 ## Database migrations
 
@@ -304,3 +336,4 @@ CI runs the same checks on every pull request, against real Postgres and Redis s
 | 7a | Tracing: spans for LLM calls, retrieval, tools and workflow nodes | ✅ |
 | 7b | Evals: eval sets, scored runs, LLM judge, run comparison | ✅ |
 | 8 | Public API with keys and rate limits, minimal UI | ✅ |
+| 9 | Console UI for apps, knowledge, workflows, traces, evals and MCP | ✅ |

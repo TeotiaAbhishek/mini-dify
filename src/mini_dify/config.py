@@ -33,5 +33,9 @@ class Settings(BaseSettings):
     # Public API: requests per minute for each API key, unless the key sets its own.
     rate_limit_per_minute: int = 60
 
+    # When set, the console API (/v1/... and /mcp) and the console page need this token.
+    # Leave it empty on your own machine; set it before mini-dify is reachable by others.
+    console_token: str | None = None
+
 
 settings = Settings()

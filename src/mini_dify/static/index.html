@@ -172,7 +172,7 @@ function handleEvent(event, bubble) {
     }
     if (event.trace_id) {
       const link = document.createElement("a");
-      link.href = `/v1/traces/${event.trace_id}/text`;
+      link.href = `/console/#/traces/${event.trace_id}`;
       link.target = "_blank";
       link.textContent = "trace";
       details.append(link);

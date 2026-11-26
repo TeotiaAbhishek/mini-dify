@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -170,8 +170,8 @@ async def save_turn(
 # ---------- Apps ----------
 
 
-@router.post("/apps", response_model=AppOut, status_code=201)
-async def create_app(body: AppCreate, session: SessionDep):
+async def check_app_body(session: AsyncSession, body: AppCreate) -> None:
+    """Refuse settings that point at things that don't exist."""
     for dataset_id in body.dataset_ids:
         if await session.get(Dataset, dataset_id) is None:
             raise HTTPException(status_code=422, detail=f"Dataset {dataset_id} not found")
@@ -184,6 +184,18 @@ async def create_app(body: AppCreate, session: SessionDep):
     for server_id in body.mcp_server_ids:
         if await session.get(MCPServer, server_id) is None:
             raise HTTPException(status_code=422, detail=f"MCP server {server_id} not found")
+
+
+async def get_app_or_404(session: AsyncSession, app_id: uuid.UUID) -> App:
+    app = await session.get(App, app_id)
+    if app is None:
+        raise HTTPException(status_code=404, detail="App not found")
+    return app
+
+
+@router.post("/apps", response_model=AppOut, status_code=201)
+async def create_app(body: AppCreate, session: SessionDep):
+    await check_app_body(session, body)
     # mode="json" turns the UUIDs into strings, which the JSON column can store.
     app = App(**body.model_dump(mode="json"), variables=extract_variables(body.system_prompt))
     session.add(app)
@@ -199,10 +211,74 @@ async def list_apps(session: SessionDep):
 
 @router.get("/apps/{app_id}", response_model=AppOut)
 async def get_app(app_id: uuid.UUID, session: SessionDep):
-    app = await session.get(App, app_id)
-    if app is None:
-        raise HTTPException(status_code=404, detail="App not found")
+    return await get_app_or_404(session, app_id)
+
+
+@router.put("/apps/{app_id}", response_model=AppOut)
+async def update_app(app_id: uuid.UUID, body: AppCreate, session: SessionDep):
+    """Replace an app's settings. Existing conversations keep their history and inputs."""
+    app = await get_app_or_404(session, app_id)
+    await check_app_body(session, body)
+    for name, value in body.model_dump(mode="json").items():
+        setattr(app, name, value)
+    app.variables = extract_variables(body.system_prompt)
+    await session.commit()
     return app
+
+
+@router.delete("/apps/{app_id}", status_code=204)
+async def delete_app(app_id: uuid.UUID, session: SessionDep):
+    """Delete an app with its conversations, API keys and eval runs (the foreign keys
+    cascade). Traces stay: they don't point at the app."""
+    app = await get_app_or_404(session, app_id)
+    await session.delete(app)
+    await session.commit()
+    return Response(status_code=204)
+
+
+class ConversationSummary(BaseModel):
+    id: uuid.UUID
+    end_user: str | None
+    inputs: dict[str, str]
+    message_count: int
+    first_query: str | None
+    created_at: datetime
+
+
+@router.get("/apps/{app_id}/conversations", response_model=list[ConversationSummary])
+async def list_conversations(
+    app_id: uuid.UUID, session: SessionDep, limit: Annotated[int, Query(ge=1, le=200)] = 50
+):
+    """An app's conversations, newest first: from the console, the public API and evals."""
+    await get_app_or_404(session, app_id)
+    conversations = list(
+        await session.scalars(
+            select(Conversation)
+            .where(Conversation.app_id == app_id)
+            .order_by(Conversation.created_at.desc())
+            .limit(limit)
+        )
+    )
+    # One query for every message of these conversations, grouped in Python.
+    by_conversation: dict[uuid.UUID, list[Message]] = {c.id: [] for c in conversations}
+    if conversations:
+        for message in await session.scalars(
+            select(Message)
+            .where(Message.conversation_id.in_(by_conversation))
+            .order_by(Message.created_at)
+        ):
+            by_conversation[message.conversation_id].append(message)
+    return [
+        ConversationSummary(
+            id=c.id,
+            end_user=c.end_user,
+            inputs=c.inputs,
+            message_count=len(by_conversation[c.id]),
+            first_query=next((m.content for m in by_conversation[c.id] if m.role == "user"), None),
+            created_at=c.created_at,
+        )
+        for c in conversations
+    ]
 
 
 # ---------- Chatting with an app ----------
@@ -218,9 +294,7 @@ async def send_chat_message(
     embedder: EmbedderDep,
     mcp_transport: MCPTransportDep,
 ):
-    app = await session.get(App, app_id)
-    if app is None:
-        raise HTTPException(status_code=404, detail="App not found")
+    app = await get_app_or_404(session, app_id)
 
     # 1. Find the conversation, or start a new one with this request's inputs.
     if body.conversation_id is not None:

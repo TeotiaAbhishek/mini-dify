@@ -212,10 +212,6 @@ def test_rate_limit_per_key(client):
 
 
 def test_the_chat_page_is_served(client):
-    root = client.get("/", follow_redirects=False)
-    assert root.status_code == 307
-    assert root.headers["location"] == "/ui/"
-
     page = client.get("/ui/")
     assert page.status_code == 200
     assert page.headers["content-type"].startswith("text/html")
